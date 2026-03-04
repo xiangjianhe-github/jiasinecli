@@ -62,6 +62,9 @@ func ExecuteArgs(args []string) error {
 func resetFlags() {
 	versionShort = false
 	testLang = "all"
+	aiProvider = ""
+	aiModel = ""
+	aiAgent = ""
 }
 
 func init() {
@@ -96,6 +99,8 @@ func initializeApp() error {
 		homeDir + "/.jiasine",
 		homeDir + "/.jiasine/plugins",
 		homeDir + "/.jiasine/logs",
+		homeDir + "/.jiasine/agents",
+		homeDir + "/.jiasine/skills",
 	}
 	for _, dir := range dirs {
 		os.MkdirAll(dir, 0755)

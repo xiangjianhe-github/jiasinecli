@@ -1,0 +1,9 @@
+{
+    "name": "SerialTool",
+    "version": "0.1.0",
+    "description": "SerialTool 插件",
+    "author": "jiasine",
+    "enabled": true,
+    "type": "executable",
+    "entry_point": "SerialTool.exe"
+}

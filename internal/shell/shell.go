@@ -25,15 +25,17 @@ func interactiveHelp() string {
   %stest%s           运行集成测试      %s--lang c|python|rust|csharp|js|ts|java|swift|objc|all%s
   %sbridge%s         桥接层管理        %slist | call%s
   %sservice%s        服务管理          %slist | call | health%s
-  %splugin%s         插件管理          %slist | install | remove%s
+  %splugin%s         插件管理          %sview | list | install | remove | <名称>%s
+  %sai%s             AI 大模型交互    %schat | provider | agent | skill%s
 
 %s%s内置命令%s
   %shelp%s           显示此帮助
   %sclear%s / %scls%s    清屏
   %sbanner%s         显示 Logo
+  %sjiasine%s        回到初始欢迎界面
   %sexit%s / %squit%s    退出
 
-%s提示%s: 输入任意命令按 Enter 执行，如 %sversion --short%s
+%s提示%s: 输入任意命令按 Enter 执行，如 %splugin view%s
 `,
 		b, c, r,
 		g, r,
@@ -41,9 +43,11 @@ func interactiveHelp() string {
 		g, r, d, r,
 		g, r, d, r,
 		g, r, d, r,
+		g, r, d, r,
 		b, c, r,
 		g, r,
 		g, r, g, r,
+		g, r,
 		g, r,
 		g, r, g, r,
 		d, r, c, r,
@@ -94,6 +98,11 @@ func RunInteractive(executeFunc func(args []string) error) {
 			continue
 		case "help", "?":
 			fmt.Print(interactiveHelp())
+			continue
+		case "jiasine", "jiasinecli":
+			// 回到初始状态，重新显示欢迎屏幕
+			clearScreen()
+			fmt.Print(banner.WelcomeScreen())
 			continue
 		}
 

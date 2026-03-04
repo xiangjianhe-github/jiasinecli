@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/xiangjianhe-github/jiasinecli/internal/ai"
 	"github.com/spf13/viper"
 )
 
@@ -20,6 +22,8 @@ type AppConfig struct {
 	Bridges map[string]BridgeConfig `yaml:"bridges" mapstructure:"bridges"`
 	// 插件配置
 	Plugins PluginConfig `yaml:"plugins" mapstructure:"plugins"`
+	// AI 配置
+	AI AIConfig `yaml:"ai" mapstructure:"ai"`
 }
 
 // LogConfig 日志配置
@@ -53,8 +57,16 @@ type BridgeConfig struct {
 
 // PluginConfig 插件配置
 type PluginConfig struct {
-	Dir     string `yaml:"dir" mapstructure:"dir"`         // 插件目录
-	AutoLoad bool  `yaml:"auto_load" mapstructure:"auto_load"` // 自动加载
+	Dir      string `yaml:"dir" mapstructure:"dir"`           // 插件目录
+	AutoLoad bool   `yaml:"auto_load" mapstructure:"auto_load"` // 自动加载
+}
+
+// AIConfig AI 配置
+type AIConfig struct {
+	Active    string                       `yaml:"active" mapstructure:"active"`       // 当前使用的提供商
+	Providers map[string]ai.ProviderConfig `yaml:"providers" mapstructure:"providers"` // 各提供商配置
+	Agents    ai.AgentConfig               `yaml:"agents" mapstructure:"agents"`       // Agent 配置
+	Skills    ai.SkillConfig               `yaml:"skills" mapstructure:"skills"`       // Skill 配置
 }
 
 var cfg *AppConfig
@@ -109,6 +121,131 @@ func Get() *AppConfig {
 	return cfg
 }
 
+// EnsureAIConfig 检查配置文件是否存在并包含 AI 配置
+// 如果不存在，自动生成模板文件，返回文件路径和是否新建
+func EnsureAIConfig() (configPath string, created bool, err error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false, fmt.Errorf("获取用户目录失败: %w", err)
+	}
+
+	configDir := filepath.Join(home, ".jiasine")
+	configPath = filepath.Join(configDir, "config.yaml")
+
+	// 确保目录存在
+	os.MkdirAll(configDir, 0755)
+
+	// 检查文件是否存在
+	if _, statErr := os.Stat(configPath); statErr == nil {
+		// 文件存在，检查是否有 AI providers 配置
+		data, readErr := os.ReadFile(configPath)
+		if readErr == nil {
+			content := string(data)
+			// 简单检查是否有 api_key 配置（非占位符）
+			if strings.Contains(content, "api_key:") &&
+				!strings.Contains(content, "api_key: \"sk-xxxx\"") &&
+				!strings.Contains(content, "api_key: \"sk-ant-xxxx\"") &&
+				!strings.Contains(content, "api_key: \"AIza-xxxx\"") {
+				return configPath, false, nil
+			}
+		}
+	}
+
+	// 不存在或无有效 AI 配置 — 生成模板
+	tmpl := generateAIConfigTemplate()
+
+	// 如果文件已存在（但缺 AI 配置），追加；否则新建
+	if _, statErr := os.Stat(configPath); statErr == nil {
+		// 读取现有内容检查是否已有 ai: 段
+		data, _ := os.ReadFile(configPath)
+		if !strings.Contains(string(data), "\nai:") {
+			f, appendErr := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0644)
+			if appendErr != nil {
+				return configPath, false, appendErr
+			}
+			defer f.Close()
+			f.WriteString("\n" + tmpl)
+		}
+		return configPath, true, nil
+	}
+
+	// 全新文件
+	writeErr := os.WriteFile(configPath, []byte(tmpl), 0644)
+	if writeErr != nil {
+		return configPath, false, writeErr
+	}
+	return configPath, true, nil
+}
+
+func generateAIConfigTemplate() string {
+	return `# Jiasine CLI 配置文件
+# 请填入你的 AI 服务商 API Key
+
+ai:
+  active: deepseek           # 当前使用的服务商 (修改为你要用的)
+
+  providers:
+    # DeepSeek (推荐入门，价格低)
+    # 获取 API Key: https://platform.deepseek.com
+    deepseek:
+      name: deepseek
+      api_key: ""            # ← 填入你的 DeepSeek API Key
+      model: "deepseek-chat"
+      enabled: true
+
+    # OpenAI (ChatGPT)
+    # 获取 API Key: https://platform.openai.com/api-keys
+    openai:
+      name: openai
+      api_key: ""            # ← 填入你的 OpenAI API Key
+      base_url: "https://api.openai.com/v1"
+      model: "gpt-4o"
+      enabled: false         # 改为 true 启用
+
+    # Anthropic (Claude)
+    # 获取 API Key: https://console.anthropic.com
+    claude:
+      name: claude
+      api_key: ""            # ← 填入你的 Anthropic API Key
+      model: "claude-sonnet-4-20250514"
+      enabled: false
+
+    # Google (Gemini)
+    # 获取 API Key: https://aistudio.google.com/apikey
+    gemini:
+      name: gemini
+      api_key: ""            # ← 填入你的 Google AI API Key
+      model: "gemini-2.5-pro"
+      enabled: false
+
+    # 阿里云 通义千问 (Qwen)
+    # 获取 API Key: https://dashscope.console.aliyun.com
+    qwen:
+      name: qwen
+      api_key: ""            # ← 填入你的通义千问 API Key
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      model: "qwen-max"
+      enabled: false
+
+  agents:
+    dir: ""                  # Agent 定义目录 (默认 ~/.jiasine/agents)
+
+  skills:
+    dir: ""                  # Skills 定义目录 (默认 ~/.jiasine/skills)
+`
+}
+
+// HasValidAIProviders 检查当前配置是否包含有效的 AI 提供商
+func HasValidAIProviders() bool {
+	c := Get()
+	for _, p := range c.AI.Providers {
+		if p.Enabled && p.APIKey != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func setDefaults() {
 	home, _ := os.UserHomeDir()
 
@@ -119,4 +256,9 @@ func setDefaults() {
 
 	viper.SetDefault("plugins.dir", filepath.Join(home, ".jiasine", "plugins"))
 	viper.SetDefault("plugins.auto_load", true)
+
+	// AI 默认值
+	viper.SetDefault("ai.active", "")
+	viper.SetDefault("ai.agents.dir", filepath.Join(home, ".jiasine", "agents"))
+	viper.SetDefault("ai.skills.dir", filepath.Join(home, ".jiasine", "skills"))
 }

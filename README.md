@@ -156,6 +156,18 @@ jiasinecli
 │   ├── list            # 列出已安装插件
 │   ├── install         # 安装插件
 │   └── remove          # 卸载插件
+├── ai                  # AI 大模型交互
+│   ├── chat            # 与 AI 对话 (--provider, --model, --agent)
+│   ├── provider        # 服务商管理
+│   │   ├── list        # 列出已配置的服务商
+│   │   └── switch      # 切换当前服务商
+│   ├── agent           # Agent 智能体管理
+│   │   ├── list        # 列出所有 Agent
+│   │   └── run         # 运行指定 Agent
+│   └── skill           # Skills 技能管理
+│       ├── list        # 列出所有 Skill
+│       ├── install     # 安装 Skill (JSON)
+│       └── remove      # 卸载 Skill
 └── completion          # Shell 自动补全
 ```
 
@@ -230,6 +242,114 @@ bridges:
     functions: ["encrypt", "decrypt", "hash"]
 ```
 
+## AI 插件
+
+内置 AI 插件支持主流大模型统一调用，通过配置文件管理服务商和 API 密钥。
+
+### 支持的 AI 服务商
+
+| 服务商 | 别名 | 默认模型 | 其他模型 |
+|---|---|---|---|
+| **OpenAI** | openai, chatgpt | gpt-4o | gpt-4o-mini, o1, o3-mini |
+| **Anthropic** | claude, anthropic | claude-sonnet-4-20250514 | claude-opus-4-20250514 |
+| **Google** | gemini, google | gemini-2.5-pro | gemini-2.5-flash |
+| **阿里云** | qwen, tongyi | qwen-max | qwen-plus, qwen-turbo |
+| **DeepSeek** | deepseek | deepseek-chat | deepseek-coder, deepseek-reasoner |
+
+### AI 配置
+
+```yaml
+# ~/.jiasine/config.yaml
+ai:
+  active: openai       # 当前激活的服务商
+  providers:
+    openai:
+      api_key: "sk-xxxx"
+      model: "gpt-4o"
+      enabled: true
+    claude:
+      api_key: "sk-ant-xxxx"
+      model: "claude-sonnet-4-20250514"
+      enabled: true
+    deepseek:
+      api_key: "sk-xxxx"
+      model: "deepseek-chat"
+      enabled: true
+```
+
+### 使用示例
+
+```bash
+# 与默认 AI 对话
+jiasinecli ai chat "解释 Go 的 interface 机制"
+
+# 指定服务商和模型
+jiasinecli ai chat -p claude -m claude-opus-4-20250514 "编写一个排序函数"
+
+# 查看已配置的服务商
+jiasinecli ai provider list
+
+# 切换当前服务商
+jiasinecli ai provider switch deepseek
+```
+
+### Agent 智能体
+
+Agent 是预配置的 AI 助手，包含特定的系统提示词和技能组合。
+
+| 内置 Agent | 描述 |
+|---|---|
+| **assistant** | 通用 AI 助手 — 回答问题、写作、翻译 |
+| **coder** | 编程助手 — 代码生成、调试、重构 |
+| **translator** | 翻译助手 — 多语言互译 |
+| **devops** | 运维助手 — 部署、监控、故障排查 |
+
+```bash
+# 查看所有 Agent
+jiasinecli ai agent list
+
+# 使用编程助手
+jiasinecli ai agent run coder "帮我写一个 HTTP 中间件"
+
+# 通过 chat 指定 Agent
+jiasinecli ai chat -a translator "翻译: Hello World"
+```
+
+自定义 Agent 放入 `~/.jiasine/agents/` 目录，JSON 格式：
+
+```json
+{
+  "name": "my-agent",
+  "description": "我的自定义智能体",
+  "system": "你是一个...",
+  "skills": ["code-review", "doc-writer"],
+  "temperature": 0.7
+}
+```
+
+### Skills 技能系统
+
+Skill 是可组合的能力模块，可挂载到 Agent 上增强其专业能力。
+
+| 内置 Skill | 描述 | 标签 |
+|---|---|---|
+| **code-review** | 代码审查 — 质量、安全、性能分析 | code, review, quality |
+| **sql-expert** | SQL 专家 — 编写、优化、调试 | sql, database |
+| **api-designer** | API 设计 — RESTful/GraphQL/gRPC | api, rest, design |
+| **git-helper** | Git 助手 — 分支、冲突、工作流 | git, vcs |
+| **doc-writer** | 文档写手 — 技术文档、README | documentation, writing |
+
+```bash
+# 查看所有 Skill
+jiasinecli ai skill list
+
+# 安装自定义 Skill
+jiasinecli ai skill install my-skill.json
+
+# 卸载 Skill
+jiasinecli ai skill remove my-skill
+```
+
 ## 跨平台构建
 
 支持 **7 个目标平台**，CGO_ENABLED=0 纯静态编译，单文件无依赖分发：
@@ -279,7 +399,8 @@ JiasineCli/
 │   ├── test.go                      # 集成测试命令
 │   ├── bridge.go                    # 桥接层命令
 │   ├── service.go                   # 服务层命令
-│   └── plugin.go                    # 插件命令
+│   ├── plugin.go                    # 插件命令
+│   └── ai.go                        # AI 插件命令 (chat/provider/agent/skill)
 ├── internal/                        # 内部实现
 │   ├── version/                     # 版本管理
 │   │   ├── version.go               # SemVer 解析/比较
@@ -297,6 +418,12 @@ JiasineCli/
 │   │   └── manager.go               # 服务管理器 (HTTP/gRPC/Process)
 │   ├── plugin/                      # 插件系统
 │   │   └── manager.go               # 插件管理器
+│   ├── ai/                          # AI 插件
+│   │   ├── provider.go              # Provider 接口 & 工厂注册
+│   │   ├── providers.go             # 5 大服务商实现
+│   │   ├── manager.go               # AI 统一管理器
+│   │   ├── agent.go                 # Agent 智能体框架
+│   │   └── skill.go                 # Skills 技能系统
 │   ├── config/                      # 配置管理
 │   │   └── config.go                # Viper 配置加载
 │   └── logger/                      # 日志管理
@@ -325,4 +452,5 @@ JiasineCli/
 - **日志**: [Zap](https://go.uber.org/zap) (结构化日志)
 - **FFI**: syscall (Windows DLL) / cgo (Unix .so/.dylib)
 - **构建**: Go 原生交叉编译，CGO_ENABLED=0 纯静态链接
+- **AI 插件**: 5 大主流模型服务商 + Agent 智能体 + Skills 技能系统
 - **支持语言**: C, Python, Rust, C#, JavaScript, TypeScript, Java, Swift, Objective-C
