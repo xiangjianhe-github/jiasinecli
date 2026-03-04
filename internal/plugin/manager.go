@@ -1,10 +1,10 @@
-// Package plugin 提供插件管理系统（远程优先 + 本地回退）
+// Package plugin 提供插件管理系统（远程服务器）
 //
 // 插件市场架构:
-//   - 优先从远程 GitHub 仓库获取插件列表
-//   - 服务器不可达时回退到本地 plugin/ 目录
+//   - 从远程 GitHub 仓库获取插件列表
 //   - 每个插件 = <Name>.json 描述文件 + <Name>.7z 压缩包
-//   - 安装时下载并解压 .7z 到 plugin/<Name>/ 目录
+//   - 安装时下载并解压 .7z 到 ~/.jiasine/plugins/plugin/<Name>/ 目录
+//   - 已安装插件从 ~/.jiasine/plugins/plugin/ 目录查询和调用
 package plugin
 
 import (
@@ -28,15 +28,7 @@ const (
 	// 下载原始文件
 	githubRawURL = "https://raw.githubusercontent.com/xiangjianhe-github/jiasinecli/main/plugin"
 	// HTTP 超时
-	httpTimeout = 10 * time.Second
-)
-
-// Source 插件来源
-type Source string
-
-const (
-	SourceRemote Source = "remote" // 远程服务器
-	SourceLocal  Source = "local"  // 本地目录
+	httpTimeout = 15 * time.Second
 )
 
 // Info 插件信息
@@ -53,7 +45,6 @@ type Info struct {
 	Tags        []string `json:"tags"`        // 标签
 	// 内部字段（不序列化到 JSON）
 	Dir       string `json:"-"` // 插件所在目录的绝对路径 (已安装时有值)
-	Source    Source `json:"-"` // 来源: remote / local
 	Installed bool   `json:"-"` // 是否已安装
 }
 
@@ -67,53 +58,43 @@ type githubContent struct {
 
 // Manager 插件管理器
 type Manager struct {
-	pluginDir string // 应用目录下的 plugin/ 目录
-	client    *http.Client
+	installDir string // 已安装插件目录: ~/.jiasine/plugins/plugin
+	client     *http.Client
 }
 
 // NewManager 创建插件管理器实例
+// 已安装插件存放在 ~/.jiasine/plugins/plugin/ 目录
 func NewManager() *Manager {
-	exePath, _ := os.Executable()
-	exeDir := filepath.Dir(exePath)
-	pluginDir := filepath.Join(exeDir, "plugin")
+	home, _ := os.UserHomeDir()
+	installDir := filepath.Join(home, ".jiasine", "plugins", "plugin")
 	return &Manager{
-		pluginDir: pluginDir,
+		installDir: installDir,
 		client: &http.Client{
 			Timeout: httpTimeout,
 		},
 	}
 }
 
-// PluginDir 返回插件目录路径
-func (m *Manager) PluginDir() string {
-	return m.pluginDir
+// InstallDir 返回已安装插件目录路径
+func (m *Manager) InstallDir() string {
+	return m.installDir
 }
 
 // ---------------------------------------------------------------------------
-// 插件市场：远程优先 + 本地回退
+// 插件市场：从远程服务器获取
 // ---------------------------------------------------------------------------
 
-// Marketplace 获取插件市场列表（远程优先，本地回退）
-// 返回可用插件列表和来源标识
-func (m *Manager) Marketplace() ([]Info, Source, error) {
-	// 1. 尝试远程
+// Marketplace 获取插件市场列表（从远程服务器）
+// 返回可用插件列表，同时标记已安装状态
+func (m *Manager) Marketplace() ([]Info, error) {
 	plugins, err := m.fetchRemotePlugins()
-	if err == nil && len(plugins) > 0 {
-		// 标记已安装状态
-		m.markInstalled(plugins)
-		return plugins, SourceRemote, nil
-	}
 	if err != nil {
-		logger.Warn("远程插件市场不可达，回退到本地", "error", err)
+		return nil, fmt.Errorf("获取插件市场失败: %w\n服务器: %s", err, githubAPIURL)
 	}
 
-	// 2. 回退到本地
-	plugins, err = m.scanLocalMarketplace()
-	if err != nil {
-		return nil, SourceLocal, fmt.Errorf("获取插件列表失败: %w", err)
-	}
+	// 标记已安装状态
 	m.markInstalled(plugins)
-	return plugins, SourceLocal, nil
+	return plugins, nil
 }
 
 // fetchRemotePlugins 从 GitHub API 获取远程插件列表
@@ -156,7 +137,6 @@ func (m *Manager) fetchRemotePlugins() ([]Info, error) {
 			logger.Warn("下载插件描述失败", "file", jf, "error", err)
 			continue
 		}
-		info.Source = SourceRemote
 		plugins = append(plugins, *info)
 	}
 
@@ -187,7 +167,6 @@ func (m *Manager) downloadPluginJSON(filename string) (*Info, error) {
 		return nil, fmt.Errorf("解析 %s 失败: %w", filename, err)
 	}
 
-	// 从文件名推断名称
 	if info.Name == "" {
 		info.Name = strings.TrimSuffix(filename, ".json")
 	}
@@ -195,68 +174,30 @@ func (m *Manager) downloadPluginJSON(filename string) (*Info, error) {
 	return &info, nil
 }
 
-// scanLocalMarketplace 扫描本地 plugin/ 目录下的 *.json 文件（平铺格式）
-func (m *Manager) scanLocalMarketplace() ([]Info, error) {
-	var plugins []Info
-
-	if _, err := os.Stat(m.pluginDir); os.IsNotExist(err) {
-		return plugins, nil
-	}
-
-	entries, err := os.ReadDir(m.pluginDir)
-	if err != nil {
-		return nil, fmt.Errorf("读取插件目录失败: %w", err)
-	}
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue // 跳过子目录（那是已安装的插件）
-		}
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-
-		jsonPath := filepath.Join(m.pluginDir, entry.Name())
-		info, err := loadPluginJSON(jsonPath)
-		if err != nil {
-			logger.Warn("加载本地插件描述失败", "file", entry.Name(), "error", err)
-			continue
-		}
-
-		if info.Name == "" {
-			info.Name = strings.TrimSuffix(entry.Name(), ".json")
-		}
-		info.Source = SourceLocal
-		plugins = append(plugins, *info)
-	}
-
-	return plugins, nil
-}
-
 // markInstalled 标记市场列表中已安装的插件
 func (m *Manager) markInstalled(plugins []Info) {
 	for i := range plugins {
-		installDir := filepath.Join(m.pluginDir, plugins[i].Name)
-		if fi, err := os.Stat(installDir); err == nil && fi.IsDir() {
+		dir := filepath.Join(m.installDir, plugins[i].Name)
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
 			plugins[i].Installed = true
-			plugins[i].Dir = installDir
+			plugins[i].Dir = dir
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 已安装插件管理
+// 已安装插件管理 (~/.jiasine/plugins/plugin/<Name>/)
 // ---------------------------------------------------------------------------
 
-// ScanInstalled 扫描已安装插件 (plugin/<Name>/<Name>.json 子目录格式)
+// ScanInstalled 扫描已安装插件
 func (m *Manager) ScanInstalled() ([]Info, error) {
 	var plugins []Info
 
-	if _, err := os.Stat(m.pluginDir); os.IsNotExist(err) {
+	if _, err := os.Stat(m.installDir); os.IsNotExist(err) {
 		return plugins, nil
 	}
 
-	entries, err := os.ReadDir(m.pluginDir)
+	entries, err := os.ReadDir(m.installDir)
 	if err != nil {
 		return nil, fmt.Errorf("读取插件目录失败: %w", err)
 	}
@@ -267,12 +208,10 @@ func (m *Manager) ScanInstalled() ([]Info, error) {
 		}
 
 		dirName := entry.Name()
-		pluginDir := filepath.Join(m.pluginDir, dirName)
+		pluginDir := filepath.Join(m.installDir, dirName)
 
-		// 查找 <DirName>.json
 		jsonPath := filepath.Join(pluginDir, dirName+".json")
 		if _, err := os.Stat(jsonPath); os.IsNotExist(err) {
-			// 也尝试查找 manifest.json (兼容)
 			jsonPath = filepath.Join(pluginDir, "manifest.json")
 			if _, err := os.Stat(jsonPath); os.IsNotExist(err) {
 				continue
@@ -335,7 +274,6 @@ func (m *Manager) Open(name string) error {
 
 	logger.Info("启动插件", "name", name, "entry", entryPath)
 
-	// 在新的终端窗口中打开
 	if runtime.GOOS == "windows" {
 		cmd := exec.Command("cmd", "/c", "start", "cmd", "/k", entryPath)
 		cmd.Dir = info.Dir
@@ -348,7 +286,6 @@ func (m *Manager) Open(name string) error {
 		return cmd.Start()
 	}
 
-	// Linux: 尝试常见终端
 	for _, term := range []string{"gnome-terminal", "xterm", "konsole"} {
 		if _, err := exec.LookPath(term); err == nil {
 			cmd := exec.Command(term, "--", entryPath)
@@ -357,7 +294,6 @@ func (m *Manager) Open(name string) error {
 		}
 	}
 
-	// 后备：直接启动
 	cmd := exec.Command(entryPath)
 	cmd.Dir = info.Dir
 	cmd.Stdout = os.Stdout
@@ -369,72 +305,54 @@ func (m *Manager) Open(name string) error {
 // 安装 / 卸载
 // ---------------------------------------------------------------------------
 
-// Install 安装插件（从远程下载或从本地安装）
-// 流程: 下载 .json + .7z → 解压到 plugin/<Name>/
+// Install 从远程服务器下载并安装插件
+// 流程: 下载 .json + .7z → 解压到 ~/.jiasine/plugins/plugin/<Name>/
 func (m *Manager) Install(name string) error {
-	// 检查是否已安装
-	installDir := filepath.Join(m.pluginDir, name)
+	installDir := filepath.Join(m.installDir, name)
 	if fi, err := os.Stat(installDir); err == nil && fi.IsDir() {
 		return fmt.Errorf("插件 '%s' 已安装 (目录: %s)", name, installDir)
 	}
 
-	// 确保 plugin 目录存在
-	if err := os.MkdirAll(m.pluginDir, 0755); err != nil {
-		return fmt.Errorf("创建插件目录失败: %w", err)
+	if err := os.MkdirAll(m.installDir, 0755); err != nil {
+		return fmt.Errorf("创建安装目录失败: %w", err)
 	}
 
 	jsonFile := name + ".json"
 	archiveFile := name + ".7z"
-
-	// 尝试从远程下载
-	remoteOK := false
 	jsonURL := githubRawURL + "/" + jsonFile
 	archiveURL := githubRawURL + "/" + archiveFile
 
-	// 1. 下载 JSON 到本地
-	localJSON := filepath.Join(m.pluginDir, jsonFile)
+	// 临时下载位置
+	tmpDir := filepath.Join(m.installDir, ".tmp_"+name)
+	os.MkdirAll(tmpDir, 0755)
+	defer os.RemoveAll(tmpDir)
+
+	// 1. 下载 JSON
+	localJSON := filepath.Join(tmpDir, jsonFile)
 	if err := m.downloadFile(jsonURL, localJSON); err != nil {
-		logger.Warn("远程下载 JSON 失败，尝试本地", "error", err)
-	} else {
-		remoteOK = true
+		return fmt.Errorf("下载插件描述失败: %w", err)
 	}
 
-	// 2. 下载 7z 到本地
-	localArchive := filepath.Join(m.pluginDir, archiveFile)
-	if remoteOK {
-		if err := m.downloadFile(archiveURL, localArchive); err != nil {
-			logger.Warn("远程下载压缩包失败", "error", err)
-			// JSON 下载成功但 7z 失败 → 检查本地是否有 7z
-			if _, err := os.Stat(localArchive); os.IsNotExist(err) {
-				return fmt.Errorf("下载插件压缩包失败: %s 不存在", archiveFile)
-			}
-		}
+	// 2. 下载 7z
+	localArchive := filepath.Join(tmpDir, archiveFile)
+	if err := m.downloadFile(archiveURL, localArchive); err != nil {
+		return fmt.Errorf("下载插件压缩包失败: %w", err)
 	}
 
-	// 3. 检查本地文件是否就绪
-	if _, err := os.Stat(localJSON); os.IsNotExist(err) {
-		return fmt.Errorf("插件描述文件不存在: %s\n请确认远程或本地 plugin/ 目录下有 %s", jsonFile, jsonFile)
-	}
-	if _, err := os.Stat(localArchive); os.IsNotExist(err) {
-		return fmt.Errorf("插件压缩包不存在: %s\n请确认远程或本地 plugin/ 目录下有 %s", archiveFile, archiveFile)
-	}
-
-	// 4. 创建安装目录
+	// 3. 创建安装目录
 	if err := os.MkdirAll(installDir, 0755); err != nil {
 		return fmt.Errorf("创建安装目录失败: %w", err)
 	}
 
-	// 5. 解压 .7z 到安装目录
+	// 4. 解压 .7z 到安装目录
 	if err := m.extract7z(localArchive, installDir); err != nil {
-		// 解压失败 → 清理安装目录
 		os.RemoveAll(installDir)
 		return fmt.Errorf("解压插件失败: %w", err)
 	}
 
-	// 6. 复制 JSON 描述到安装目录
+	// 5. 复制 JSON 描述到安装目录
 	destJSON := filepath.Join(installDir, jsonFile)
 	if _, err := os.Stat(destJSON); os.IsNotExist(err) {
-		// 如果 7z 里没有 JSON，从外面复制进去
 		data, _ := os.ReadFile(localJSON)
 		if err := os.WriteFile(destJSON, data, 0644); err != nil {
 			logger.Warn("复制描述文件到安装目录失败", "error", err)
@@ -470,7 +388,6 @@ func (m *Manager) Remove(name string) error {
 // 辅助方法
 // ---------------------------------------------------------------------------
 
-// downloadFile 下载远程文件到本地路径
 func (m *Manager) downloadFile(url, destPath string) error {
 	resp, err := m.client.Get(url)
 	if err != nil {
@@ -495,16 +412,12 @@ func (m *Manager) downloadFile(url, destPath string) error {
 	return nil
 }
 
-// extract7z 解压 .7z 文件到目标目录
-// 依赖系统安装的 7z 命令行工具
 func (m *Manager) extract7z(archivePath, destDir string) error {
-	// 查找 7z 可执行文件
 	sevenZip := find7zExecutable()
 	if sevenZip == "" {
 		return fmt.Errorf("未找到 7z 解压工具\n请安装 7-Zip: https://www.7-zip.org/\n或将 7z.exe 添加到 PATH 环境变量")
 	}
 
-	// 7z x archive.7z -oDestDir -y
 	cmd := exec.Command(sevenZip, "x", archivePath, "-o"+destDir, "-y")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -514,14 +427,11 @@ func (m *Manager) extract7z(archivePath, destDir string) error {
 	return nil
 }
 
-// find7zExecutable 查找 7z 可执行文件
 func find7zExecutable() string {
-	// 1. 尝试 PATH 中的 7z
 	if p, err := exec.LookPath("7z"); err == nil {
 		return p
 	}
 
-	// 2. Windows 常见安装路径
 	if runtime.GOOS == "windows" {
 		candidates := []string{
 			`C:\Program Files\7-Zip\7z.exe`,
@@ -537,7 +447,6 @@ func find7zExecutable() string {
 	return ""
 }
 
-// installedNames 返回所有已安装插件名称
 func (m *Manager) installedNames() string {
 	plugins, _ := m.ScanInstalled()
 	if len(plugins) == 0 {
@@ -550,7 +459,6 @@ func (m *Manager) installedNames() string {
 	return strings.Join(names, ", ")
 }
 
-// loadPluginJSON 加载插件 JSON 描述文件
 func loadPluginJSON(path string) (*Info, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -563,12 +471,4 @@ func loadPluginJSON(path string) (*Info, error) {
 	}
 
 	return &info, nil
-}
-
-// getPluginEntryPoint 根据平台获取默认入口名
-func getPluginEntryPoint(name string) string {
-	if runtime.GOOS == "windows" {
-		return name + ".exe"
-	}
-	return name
 }

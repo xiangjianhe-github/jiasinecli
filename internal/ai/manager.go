@@ -31,9 +31,14 @@ func NewManager(cfg AIConfig) *Manager {
 		active:    cfg.Active,
 	}
 
-	// 初始化所有已启用的提供商
+	// 初始化所有已启用且配置了 API Key 的提供商
 	for name, pcfg := range cfg.Providers {
 		if !pcfg.Enabled {
+			continue // 未启用，静默跳过
+		}
+		if pcfg.APIKey == "" {
+			// 已启用但未配置 API Key — 仅记录 Debug（用户可能只配了其中一个）
+			logger.Debug("AI 提供商已启用但未配置 API Key，跳过", "provider", name)
 			continue
 		}
 		pcfg.Name = name // 确保 name 字段一致

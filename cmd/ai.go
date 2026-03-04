@@ -21,30 +21,41 @@ var (
 
 // getAIManager 懒加载 AI 管理器，自动检测并生成配置
 func getAIManager() (*ai.Manager, error) {
-	// 检查是否有有效的 AI 配置
+	// 检查是否有有效的 AI 配置（只要有一个已启用 + 有 API Key 即可）
 	if !config.HasValidAIProviders() {
-		// 自动生成配置模板
+		// 尝试自动生成配置模板
 		configPath, created, err := config.EnsureAIConfig()
 		if err != nil {
 			return nil, fmt.Errorf("生成 AI 配置失败: %w", err)
 		}
+
+		// 生成模板后重新加载配置，检查是否已有有效 key
+		if !created {
+			// 文件已存在 — 重新加载一次，确认最新状态
+			_ = config.Reload()
+			if config.HasValidAIProviders() {
+				goto loadManager // 配置可用，继续
+			}
+		}
+
+		// 确实没有配置 API Key
 		if created {
 			fmt.Printf("\n%s📄 已自动生成 AI 配置模板:%s\n", banner.BrightCyan, banner.Reset)
 			fmt.Printf("   %s%s%s\n\n", banner.BrightGreen, configPath, banner.Reset)
-			fmt.Printf("请编辑配置文件，填入你的 API Key 后重新运行。\n\n")
-			fmt.Printf("%s各服务商 API Key 获取地址:%s\n", banner.Dim, banner.Reset)
-			fmt.Printf("  DeepSeek  (推荐)  https://platform.deepseek.com\n")
-			fmt.Printf("  OpenAI           https://platform.openai.com/api-keys\n")
-			fmt.Printf("  Anthropic        https://console.anthropic.com\n")
-			fmt.Printf("  Google Gemini    https://aistudio.google.com/apikey\n")
-			fmt.Printf("  通义千问          https://dashscope.console.aliyun.com\n\n")
-			return nil, fmt.Errorf("请先配置 API Key")
 		}
-		// 文件存在但无有效 key
-		fmt.Printf("\n%s⚠ AI 提供商未配置 API Key%s\n", banner.Yellow, banner.Reset)
-		fmt.Printf("请编辑: %s%s%s\n\n", banner.BrightGreen, configPath, banner.Reset)
-		return nil, fmt.Errorf("请先配置 API Key")
+		fmt.Printf("\n%s⚠ 未检测到已配置的 AI API Key%s\n", banner.Yellow, banner.Reset)
+		fmt.Printf("请编辑: %s%s%s\n", banner.BrightGreen, configPath, banner.Reset)
+		fmt.Printf("%s只需配置一个服务商即可使用，无需全部填写%s\n\n", banner.Dim, banner.Reset)
+		fmt.Printf("%s各服务商 API Key 获取地址:%s\n", banner.Dim, banner.Reset)
+		fmt.Printf("  DeepSeek  (推荐)  https://platform.deepseek.com\n")
+		fmt.Printf("  OpenAI           https://platform.openai.com/api-keys\n")
+		fmt.Printf("  Anthropic        https://console.anthropic.com\n")
+		fmt.Printf("  Google Gemini    https://aistudio.google.com/apikey\n")
+		fmt.Printf("  通义千问          https://dashscope.console.aliyun.com\n\n")
+		return nil, fmt.Errorf("请先配置至少一个 AI 服务商的 API Key")
 	}
+
+loadManager:
 
 	cfg := config.Get()
 	mgr := ai.NewManager(ai.AIConfig{
@@ -344,6 +355,121 @@ var aiSkillRemoveCmd = &cobra.Command{
 
 // ===== 辅助函数 =====
 
+// ===== ai list =====
+
+var aiListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "查看可用 AI 模型列表",
+	Long: `列出所有已配置且可用的 AI 模型。
+
+显示每个服务商的名称、状态、默认模型等信息。
+标记为 ✓ 的是当前激活的提供商。
+
+示例:
+  jiasinecli ai list`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		aiMgr, err := getAIManager()
+		if err != nil {
+			return err
+		}
+
+		providers := aiMgr.ListProviders()
+		if len(providers) == 0 {
+			fmt.Println("未配置任何 AI 提供商")
+			fmt.Printf("请在 %s~/.jiasine/config.yaml%s 中配置\n", banner.BrightGreen, banner.Reset)
+			return nil
+		}
+
+		fmt.Printf("\n%s🤖 可用 AI 模型列表%s\n", banner.Bold+banner.BrightCyan, banner.Reset)
+		fmt.Println(strings.Repeat("─", 70))
+		fmt.Printf("  %-3s %-15s %-25s %s\n", "", "服务商", "默认模型", "可用模型")
+		fmt.Println(strings.Repeat("─", 70))
+
+		for i, p := range providers {
+			status := fmt.Sprintf("  %s%d%s", banner.Dim, i+1, banner.Reset)
+			if p.Active {
+				status = fmt.Sprintf("%s✓ %d%s", banner.BrightGreen, i+1, banner.Reset)
+			}
+			models := strings.Join(p.Models, ", ")
+			if len(models) > 25 {
+				models = models[:22] + "..."
+			}
+			fmt.Printf("  %s %-15s %-25s %s\n", status, p.Name, p.DefaultModel, models)
+		}
+
+		fmt.Printf("\n%s提示%s: 使用 %sai connect%s 交互选择并连接模型\n\n",
+			banner.Dim, banner.Reset,
+			banner.BrightGreen, banner.Reset)
+		return nil
+	},
+}
+
+// ===== ai connect =====
+
+var aiConnectCmd = &cobra.Command{
+	Use:   "connect",
+	Short: "选择 AI 模型并连接对话",
+	Long: `交互式选择要连接的 AI 服务商，然后进入对话模式。
+
+会列出所有可用的 AI 提供商供选择，选择后自动进入 AI 交互模式。
+
+示例:
+  jiasinecli ai connect`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		aiMgr, err := getAIManager()
+		if err != nil {
+			return err
+		}
+
+		providers := aiMgr.ListProviders()
+		if len(providers) == 0 {
+			return fmt.Errorf("未配置任何可用的 AI 提供商")
+		}
+
+		// 显示选择列表
+		fmt.Printf("\n%s🤖 选择要连接的 AI 模型%s\n", banner.Bold+banner.BrightCyan, banner.Reset)
+		fmt.Println(strings.Repeat("─", 50))
+		for i, p := range providers {
+			activeTag := ""
+			if p.Active {
+				activeTag = fmt.Sprintf(" %s(当前)%s", banner.BrightGreen, banner.Reset)
+			}
+			fmt.Printf("  %s%d%s. %-15s %s%s%s%s\n",
+				banner.BrightCyan, i+1, banner.Reset,
+				p.Name, banner.Dim, p.DefaultModel, banner.Reset, activeTag)
+		}
+		fmt.Println(strings.Repeat("─", 50))
+
+		// 读取用户选择
+		fmt.Printf("\n请输入编号 (1-%d): ", len(providers))
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return fmt.Errorf("读取输入失败")
+		}
+		input := strings.TrimSpace(scanner.Text())
+
+		// 解析选择
+		var choice int
+		if _, err := fmt.Sscanf(input, "%d", &choice); err != nil || choice < 1 || choice > len(providers) {
+			return fmt.Errorf("无效选择: %s (请输入 1-%d)", input, len(providers))
+		}
+
+		selected := providers[choice-1]
+		if err := aiMgr.SetActive(selected.Key); err != nil {
+			return fmt.Errorf("切换提供商失败: %w", err)
+		}
+
+		fmt.Printf("\n%s✓ 已选择 %s (%s)%s\n",
+			banner.BrightGreen, selected.Name, selected.DefaultModel, banner.Reset)
+
+		// 设置 provider 标志后进入交互模式
+		aiProvider = selected.Key
+		return enterAIInteractive("")
+	},
+}
+
+// ===== 辅助函数 =====
+
 func printAIResponse(resp *ai.ChatResponse) {
 	fmt.Println()
 	fmt.Println(resp.Content)
@@ -548,6 +674,8 @@ func init() {
 	aiSkillCmd.AddCommand(aiSkillRemoveCmd)
 
 	aiCmd.AddCommand(aiChatCmd)
+	aiCmd.AddCommand(aiListCmd)
+	aiCmd.AddCommand(aiConnectCmd)
 	aiCmd.AddCommand(aiProviderCmd)
 	aiCmd.AddCommand(aiAgentCmd)
 	aiCmd.AddCommand(aiSkillCmd)

@@ -121,6 +121,15 @@ func Get() *AppConfig {
 	return cfg
 }
 
+// Reload 重新加载配置文件
+func Reload() error {
+	if err := viper.ReadInConfig(); err != nil {
+		return err
+	}
+	cfg = &AppConfig{}
+	return viper.Unmarshal(cfg)
+}
+
 // EnsureAIConfig 检查配置文件是否存在并包含 AI 配置
 // 如果不存在，自动生成模板文件，返回文件路径和是否新建
 func EnsureAIConfig() (configPath string, created bool, err error) {
@@ -137,15 +146,12 @@ func EnsureAIConfig() (configPath string, created bool, err error) {
 
 	// 检查文件是否存在
 	if _, statErr := os.Stat(configPath); statErr == nil {
-		// 文件存在，检查是否有 AI providers 配置
+		// 文件存在，检查是否包含 ai: 配置段
 		data, readErr := os.ReadFile(configPath)
 		if readErr == nil {
 			content := string(data)
-			// 简单检查是否有 api_key 配置（非占位符）
-			if strings.Contains(content, "api_key:") &&
-				!strings.Contains(content, "api_key: \"sk-xxxx\"") &&
-				!strings.Contains(content, "api_key: \"sk-ant-xxxx\"") &&
-				!strings.Contains(content, "api_key: \"AIza-xxxx\"") {
+			// 文件中已有 ai: 段 → 不需要再生成模板
+			if strings.Contains(content, "\nai:") || strings.HasPrefix(content, "ai:") {
 				return configPath, false, nil
 			}
 		}

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,12 +16,12 @@ var pluginCmd = &cobra.Command{
 	Short: "插件管理",
 	Long: `管理 Jiasine CLI 插件
 
-插件市场优先从远程服务器获取列表，服务器不可达时回退到本地。
+插件市场从远程服务器获取列表。
 每个插件 = <Name>.json 描述文件 + <Name>.7z 压缩包。
-安装时自动下载并解压到 plugin/<Name>/ 目录。
+安装时下载并解压到 ~/.jiasine/plugins/plugin/<Name>/ 目录。
 
 示例:
-  jiasinecli plugin view                 # 查看插件市场 (远程优先)
+  jiasinecli plugin view                 # 查看插件市场
   jiasinecli plugin open SerialTool      # 打开已安装的 SerialTool 插件
   jiasinecli plugin list                 # 列出已安装的插件
   jiasinecli plugin install SerialTool   # 安装插件 (下载+解压)
@@ -32,36 +31,25 @@ var pluginCmd = &cobra.Command{
 // plugin view  —— 插件市场：远程优先 + 本地回退
 var pluginViewCmd = &cobra.Command{
 	Use:   "view",
-	Short: "查看插件市场 (远程优先，本地回退)",
+	Short: "查看插件市场 (远程服务器)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mgr := plugin.NewManager()
 
 		fmt.Printf("\n%s%s 插件市场%s  正在获取列表...\n",
 			banner.Bold+banner.BrightCyan, "📦", banner.Reset)
 
-		plugins, source, err := mgr.Marketplace()
+		plugins, err := mgr.Marketplace()
 		if err != nil {
 			return fmt.Errorf("获取插件市场失败: %w", err)
 		}
 
-		// 来源指示
-		sourceLabel := "🌐 远程服务器"
-		if source == plugin.SourceLocal {
-			sourceLabel = "📁 本地目录"
-		}
-
-		fmt.Printf("\r%s%s 插件市场%s  %s来源: %s%s\n",
+		fmt.Printf("\r%s%s 插件市场%s  %s来源: 🌐 远程服务器%s\n",
 			banner.Bold+banner.BrightCyan, "📦", banner.Reset,
-			banner.Dim, sourceLabel, banner.Reset)
+			banner.Dim, banner.Reset)
 		fmt.Println(strings.Repeat("─", 70))
 
 		if len(plugins) == 0 {
 			fmt.Printf("\n  %s暂无可用插件%s\n", banner.Dim, banner.Reset)
-			if source == plugin.SourceLocal {
-				fmt.Printf("  将插件 .json 文件放入 %s%s%s 即可被发现\n",
-					banner.BrightGreen, mgr.PluginDir(), banner.Reset)
-				fmt.Printf("  格式: plugin/<名称>.json + plugin/<名称>.7z\n\n")
-			}
 			return nil
 		}
 
@@ -162,13 +150,12 @@ var pluginListCmd = &cobra.Command{
 
 var pluginInstallCmd = &cobra.Command{
 	Use:   "install [name]",
-	Short: "安装插件 (从远程下载或本地安装)",
-	Long: `从插件市场安装指定插件。
+	Short: "安装插件 (从远程服务器下载)",
+	Long: `从远程服务器下载并安装指定插件。
 
 安装流程:
   1. 从远程服务器下载 <Name>.json + <Name>.7z
-  2. 若远程不可达，使用本地 plugin/ 目录下的文件
-  3. 解压 .7z 到 plugin/<Name>/ 目录
+  2. 解压 .7z 到 ~/.jiasine/plugins/plugin/<Name>/ 目录
 
 前置条件:
   需要安装 7-Zip (https://www.7-zip.org/)
@@ -188,7 +175,7 @@ var pluginInstallCmd = &cobra.Command{
 		}
 
 		fmt.Printf("%s✓ 插件 '%s' 安装成功%s\n", banner.BrightGreen, name, banner.Reset)
-		fmt.Printf("  目录: %s/plugin/%s/\n", getExeDir(), name)
+		fmt.Printf("  目录: %s\n", filepath.Join(mgr.InstallDir(), name))
 		fmt.Printf("\n  使用 %splugin open %s%s 打开插件\n",
 			banner.BrightGreen, name, banner.Reset)
 		return nil
@@ -207,11 +194,6 @@ var pluginRemoveCmd = &cobra.Command{
 		fmt.Printf("%s✓ 插件 '%s' 已卸载%s\n", banner.BrightGreen, args[0], banner.Reset)
 		return nil
 	},
-}
-
-func getExeDir() string {
-	exe, _ := os.Executable()
-	return filepath.Dir(exe)
 }
 
 var pluginOpenCmd = &cobra.Command{
