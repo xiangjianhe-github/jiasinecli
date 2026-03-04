@@ -2,6 +2,85 @@
 
 Jiasine Cross-platform multi-language support system。
 
+## 功能概要
+
+### 核心定位
+
+JiasineCli 是一个 **跨平台多语言统一调用系统**，用 Go 作为"胶水层"，把不同语言编写的能力模块统一管理起来。无论底层用什么语言实现，上层都通过一个 CLI 工具统一调用。
+
+```
+用户 → jiasinecli → ┬─ Bridge层 (FFI)      → 本地动态库 (.dll/.so/.dylib)
+                     ├─ Service层 (HTTP)     → 独立运行的后端服务
+                     └─ Plugin层 (可执行文件)  → 用户自定义扩展
+```
+
+### 三层调用说明
+
+| 层 | 调用方式 | 支持语言 | 适用场景 |
+|---|---|---|---|
+| **Bridge** | FFI 直接加载 DLL/SO | C, Rust, Objective-C, .NET AOT | 高性能计算、密码学、图像处理等需要低延迟的场景 |
+| **Service** | HTTP / 子进程调用 | Python, C#, JS, TS, Java, Swift | AI 推理、Web 服务、数据处理等独立服务 |
+| **Plugin** | 可执行文件 / 共享库 | 任意语言 | 用户自定义扩展功能 |
+
+### 可扩展实现的功能
+
+**1. AI / 机器学习管道**
+- Python 写 AI 推理服务 → Service 层 HTTP 调用
+- 例：`jiasinecli service call ai-model --func predict --data "input.jpg"`
+
+**2. 高性能计算模块**
+- C/Rust 写计算密集库 → Bridge 层 FFI 调用
+- 例：图像压缩、加密解密、音视频编解码
+
+**3. 跨平台自动化运维**
+- 编译成 7 个平台的二进制，统一运维命令
+- 例：`jiasinecli service health` 批量检查服务状态
+
+**4. 微服务编排**
+- 注册多个 HTTP 服务（Java、C#、Node.js），统一入口调用
+- 例：`jiasinecli service call payment --func charge --params '{"amount":100}'`
+
+**5. 本地工具链整合**
+- Rust 写网络工具 → 编译为 DLL → Bridge 层调用
+- .NET AOT 编译业务逻辑 → 零依赖调用
+
+**6. 插件生态**
+- 任何人用任何语言写一个符合协议的可执行文件
+- 放入 `~/.jiasine/plugins/` 即可被发现和调用
+
+**7. 物联网 / 嵌入式**
+- 已有 ARM（树莓派）和 ARM64 交叉编译
+- 可在边缘设备上统一调用各语言模块
+
+### 使用示例
+
+```bash
+# 调用 C 写的加密库
+jiasinecli bridge call crypto --func encrypt --params "hello"
+
+# 调用 Python AI 服务
+jiasinecli service call ai-service --func predict --params '{"image":"a.jpg"}'
+
+# 查看所有服务健康状态
+jiasinecli service health
+
+# 运行 9 语言集成测试
+jiasinecli test --lang all
+
+# 安装第三方插件
+jiasinecli plugin install my-tool
+```
+
+### 核心优势
+
+- **Go 作为胶水层** — 编译快、跨平台、单二进制、并发能力强
+- **9 种语言支持** — 几乎覆盖所有主流编程语言
+- **7 平台编译** — Windows / macOS / Linux × x64 / ARM
+- **双模式交互** — 命令行模式 + 交互式 Shell（双击 exe 即用）
+- **配置驱动** — 通过 YAML 注册新的库和服务，无需改代码
+
+> 简单说：**这是一个"万能遥控器"——底层能力用最适合的语言实现，上层用一个 CLI 统一指挥。**
+
 ## 架构
 
 ```
