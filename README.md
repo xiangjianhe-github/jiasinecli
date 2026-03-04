@@ -1,6 +1,6 @@
 # Jiasine CLI
 
-Jiasine 系统统一命令行工具，Go 作为胶水层统一调用底层能力。
+Jiasine Cross-platform multi-language support system。
 
 ## 架构
 
