@@ -1,0 +1,12 @@
+{
+  "name": "NetMonitor",
+  "version": "1.3.0",
+  "description": "网络状态监控工具，实时监测网络连接、延迟与流量",
+  "author": "Jiasine",
+  "icon": "🌐",
+  "enabled": true,
+  "type": "executable",
+  "entry_point": "NetMonitor.exe",
+  "homepage": "https://github.com/xiangjianhe-github/jiasinecli",
+  "tags": ["网络", "监控", "诊断", "运维"]
+}
