@@ -130,6 +130,19 @@ func Reload() error {
 	return viper.Unmarshal(cfg)
 }
 
+// SetActiveProvider 切换当前激活的 AI 提供商并持久化到配置文件
+func SetActiveProvider(name string) error {
+	viper.Set("ai.active", name)
+	if err := viper.WriteConfig(); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+	// 更新内存中的配置
+	if cfg != nil {
+		cfg.AI.Active = name
+	}
+	return nil
+}
+
 // EnsureAIConfig 检查配置文件是否存在并包含 AI 配置
 // 如果不存在，自动生成模板文件，返回文件路径和是否新建
 func EnsureAIConfig() (configPath string, created bool, err error) {

@@ -29,6 +29,7 @@ type ChatRequest struct {
 	Temperature float64   `json:"temperature,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
+	WebSearch   bool      `json:"web_search,omitempty"` // 是否启用联网搜索
 }
 
 // ChatResponse 聊天响应

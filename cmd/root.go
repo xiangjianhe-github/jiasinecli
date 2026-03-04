@@ -20,7 +20,7 @@ var (
 // rootCmd 是 CLI 的根命令
 var rootCmd = &cobra.Command{
 	Use:   "jiasinecli",
-	Short: "Jiasine CLI - 统一系统管理工具",
+	Short: "Jiasine CLI - Cross-platform multi-language support system",
 	Long: banner.Logo() + `
 
 架构设计：

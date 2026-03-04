@@ -226,7 +226,7 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      "Jiasine"
-            VALUE "FileDescription",  "Jiasine CLI - 统一系统管理工具"
+            VALUE "FileDescription",  "Jiasine CLI - Cross-platform multi-language support system"
             VALUE "FileVersion",      "0.1.0-alpha.1"
             VALUE "InternalName",     "jiasinecli"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Jiasine"
@@ -252,7 +252,7 @@ func generateManifest(path string) error {
     name="Jiasine.CLI"
     version="0.1.0.0"
     processorArchitecture="*"/>
-  <description>Jiasine CLI - 统一系统管理工具</description>
+  <description>Jiasine CLI - Cross-platform multi-language support system</description>
 
   <!-- 请求管理员权限时不需要提升 -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">

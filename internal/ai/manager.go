@@ -14,6 +14,7 @@ type Manager struct {
 	providers map[string]Provider   // name -> provider instance
 	configs   map[string]ProviderConfig
 	active    string                // 当前激活的提供商
+	webSearch bool                  // 是否启用联网搜索
 	mu        sync.RWMutex
 }
 
@@ -78,6 +79,7 @@ func (m *Manager) ChatWith(providerName, prompt string) (*ChatResponse, error) {
 		Messages: []Message{
 			{Role: RoleUser, Content: prompt},
 		},
+		WebSearch: m.webSearch,
 	}
 
 	return provider.Chat(req)
@@ -95,6 +97,7 @@ func (m *Manager) ChatWithSystem(providerName, system, prompt string) (*ChatResp
 			{Role: RoleSystem, Content: system},
 			{Role: RoleUser, Content: prompt},
 		},
+		WebSearch: m.webSearch,
 	}
 
 	return provider.Chat(req)
@@ -108,10 +111,33 @@ func (m *Manager) ChatMessages(providerName string, messages []Message) (*ChatRe
 	}
 
 	req := &ChatRequest{
-		Messages: messages,
+		Messages:  messages,
+		WebSearch: m.webSearch,
 	}
 
 	return provider.Chat(req)
+}
+
+// SetWebSearch 设置是否启用联网搜索
+func (m *Manager) SetWebSearch(enabled bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.webSearch = enabled
+}
+
+// IsWebSearch 返回是否启用联网搜索
+func (m *Manager) IsWebSearch() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.webSearch
+}
+
+// ToggleWebSearch 切换联网搜索状态，返回切换后的状态
+func (m *Manager) ToggleWebSearch() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.webSearch = !m.webSearch
+	return m.webSearch
 }
 
 // ListProviders 列出所有已加载的提供商

@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 
 	"github.com/xiangjianhe-github/jiasinecli/internal/banner"
@@ -62,6 +63,18 @@ func RunInteractive(executeFunc func(args []string) error) {
 
 	// 显示欢迎屏幕
 	fmt.Print(banner.WelcomeScreen())
+
+	// 拦截 Ctrl+C 信号，防止直接终止进程
+	sigChan := make(chan os.Signal, 2)
+	signal.Notify(sigChan, os.Interrupt)
+	defer signal.Stop(sigChan)
+	// goroutine 持续消费信号，防止缓冲区满
+	go func() {
+		for range sigChan {
+			// 消费信号，不做任何处理 — 仅阻止默认终止行为
+			fmt.Printf("\n%s输入 exit 退出，输入 help 查看帮助%s\n", banner.Dim, banner.Reset)
+		}
+	}()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	prompt := fmt.Sprintf("%s%sjiasinecli%s%s > %s",

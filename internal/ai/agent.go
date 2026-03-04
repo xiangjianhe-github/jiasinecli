@@ -12,6 +12,7 @@ import (
 
 // Agent AI 智能体
 // 封装了系统提示词、技能调度、上下文管理
+// 支持 MCP (Model Context Protocol) 协议
 type Agent struct {
 	Name        string   `json:"name" yaml:"name"`
 	Description string   `json:"description" yaml:"description"`
@@ -21,6 +22,8 @@ type Agent struct {
 	Skills      []string `json:"skills" yaml:"skills"`           // 关联的 Skills
 	MaxTurns    int      `json:"max_turns" yaml:"max_turns"`     // 最大对话轮次
 	Temperature float64  `json:"temperature" yaml:"temperature"` // 温度参数
+	// MCP 协议支持
+	MCP *MCPConfig `json:"mcp,omitempty" yaml:"mcp,omitempty"` // MCP 工具/资源配置
 }
 
 // AgentConfig Agent 在配置文件中的结构
@@ -31,17 +34,26 @@ type AgentConfig struct {
 
 // AgentManager Agent 管理器
 type AgentManager struct {
-	agents  map[string]*Agent
-	aiMgr   *Manager
+	agents   map[string]*Agent
+	aiMgr    *Manager
 	skillMgr *SkillManager
+	agentDir string
 }
 
 // NewAgentManager 创建 Agent 管理器
 func NewAgentManager(aiMgr *Manager, skillMgr *SkillManager, cfg AgentConfig) *AgentManager {
+	agentDir := cfg.Dir
+	if agentDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			agentDir = filepath.Join(home, ".jiasine", "agents")
+		}
+	}
+
 	mgr := &AgentManager{
 		agents:   make(map[string]*Agent),
 		aiMgr:    aiMgr,
 		skillMgr: skillMgr,
+		agentDir: agentDir,
 	}
 
 	// 加载配置文件中的 Agent
@@ -53,12 +65,15 @@ func NewAgentManager(aiMgr *Manager, skillMgr *SkillManager, cfg AgentConfig) *A
 	}
 
 	// 从 Agent 目录加载
-	if cfg.Dir != "" {
-		mgr.loadFromDir(cfg.Dir)
+	if mgr.agentDir != "" {
+		mgr.loadFromDir(mgr.agentDir)
 	}
 
 	// 注册内置 Agent
 	mgr.registerBuiltinAgents()
+
+	// 将内置 Agent 写入磁盘（如目录下不存在）
+	mgr.ensureDefaults(mgr.agentDir)
 
 	return mgr
 }
@@ -146,43 +161,115 @@ type AgentInfo struct {
 // registerBuiltinAgents 注册内置 Agent
 func (m *AgentManager) registerBuiltinAgents() {
 	builtins := map[string]*Agent{
-		"assistant": {
-			Name:        "assistant",
-			Description: "通用 AI 助手 — 回答问题、写作、翻译",
-			System:      "你是 Jiasine CLI 的内置 AI 助手。请简洁、准确地回答用户问题。如果用户使用中文提问，请用中文回答。",
-			MaxTurns:    20,
-			Temperature: 0.7,
-		},
-		"coder": {
-			Name:        "coder",
-			Description: "编程助手 — 代码生成、调试、重构",
-			System: `你是一个专业的编程助手。请遵循以下原则：
-1. 代码简洁清晰，有必要的注释
-2. 遵循语言最佳实践
-3. 先分析问题再给出方案
-4. 给出可直接运行的代码`,
+		"general": {
+			Name:        "general",
+			Description: "通用 AI 智能体 — 问答、编码、翻译、写作",
+			System: `你是 Jiasine CLI 的通用 AI 智能体，具备广泛的能力：
+- 回答各类问题，提供专业建议
+- 编写、调试、重构代码
+- 多语言翻译
+- 文档写作与格式化
+- DevOps 运维指导
+
+请根据用户需求灵活应对，保持简洁准确。如果用户使用中文提问，请用中文回答。
+你可以调用可用的 Skills 来增强回答质量。`,
+			Skills:      []string{"prompt-analysis", "ask", "git-ai-search"},
 			MaxTurns:    30,
-			Temperature: 0.3,
+			Temperature: 0.7,
+			MCP: &MCPConfig{
+				Tools: []MCPTool{
+					{
+						Name:        "run_skill",
+						Description: "调用已安装的 Skill 来处理特定任务",
+						InputSchema: map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"skill_name": map[string]interface{}{"type": "string", "description": "要调用的 Skill 名称"},
+								"input":      map[string]interface{}{"type": "string", "description": "传递给 Skill 的输入"},
+							},
+							"required": []string{"skill_name", "input"},
+						},
+					},
+				},
+				Transport: "stdio",
+			},
 		},
-		"translator": {
-			Name:        "translator",
-			Description: "翻译助手 — 多语言互译",
-			System:      "你是一个专业的翻译助手。保持原文的语气和风格，翻译结果自然流畅。如果无法确定目标语言，中文翻译为英文，其他语言翻译为中文。",
-			MaxTurns:    20,
-			Temperature: 0.3,
-		},
-		"devops": {
-			Name:        "devops",
-			Description: "运维助手 — 部署、监控、故障排查",
-			System: `你是一个 DevOps/SRE 专家助手。擅长：
-- 容器化 (Docker/Kubernetes)
-- CI/CD 管道
-- 基础设施即代码 (Terraform/Ansible)
-- 监控告警 (Prometheus/Grafana)
-- 故障诊断与性能优化
-请给出安全、可靠的运维建议。`,
-			MaxTurns:    20,
-			Temperature: 0.5,
+		"explore": {
+			Name:        "explore",
+			Description: "代码探索智能体 — 代码库分析、架构理解、变更追踪",
+			System: `你是 Jiasine CLI 的代码探索智能体，专注于帮助用户理解代码库：
+
+核心能力：
+1. 代码库导航 — 搜索、阅读、分析代码结构
+2. 架构理解 — 解释模块依赖、设计模式、数据流
+3. 变更追踪 — 通过 git 历史理解代码演进
+4. 上下文恢复 — 从 git 提交中恢复 AI 对话上下文
+
+工作原则：
+- 先搜索、后分析、再总结
+- 引用具体文件路径和行号
+- 解释 "为什么" 而非仅仅 "是什么"
+- 优先使用 ask 和 git-ai-search 技能`,
+			Skills:      []string{"ask", "git-ai-search"},
+			MaxTurns:    50,
+			Temperature: 0.2,
+			MCP: &MCPConfig{
+				Tools: []MCPTool{
+					{
+						Name:        "read_code",
+						Description: "读取指定文件的代码内容",
+						InputSchema: map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"file_path":  map[string]interface{}{"type": "string", "description": "文件路径"},
+								"start_line": map[string]interface{}{"type": "integer", "description": "起始行号（可选）"},
+								"end_line":   map[string]interface{}{"type": "integer", "description": "结束行号（可选）"},
+							},
+							"required": []string{"file_path"},
+						},
+					},
+					{
+						Name:        "search_code",
+						Description: "在代码库中搜索关键字或正则模式",
+						InputSchema: map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"query":    map[string]interface{}{"type": "string", "description": "搜索关键字或正则"},
+								"is_regex": map[string]interface{}{"type": "boolean", "description": "是否为正则表达式"},
+								"path":     map[string]interface{}{"type": "string", "description": "限定搜索路径（可选）"},
+							},
+							"required": []string{"query"},
+						},
+					},
+					{
+						Name:        "git_log",
+						Description: "查看 git 提交历史",
+						InputSchema: map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"path":   map[string]interface{}{"type": "string", "description": "文件/目录路径（可选）"},
+								"author": map[string]interface{}{"type": "string", "description": "作者（可选）"},
+								"limit":  map[string]interface{}{"type": "integer", "description": "条数限制"},
+							},
+						},
+					},
+				},
+				Resources: []MCPResource{
+					{
+						URI:         "workspace://",
+						Name:        "workspace",
+						Description: "当前工作区的代码文件",
+						MimeType:    "text/plain",
+					},
+					{
+						URI:         "git://history",
+						Name:        "git-history",
+						Description: "Git 提交历史",
+						MimeType:    "application/json",
+					},
+				},
+				Transport: "stdio",
+			},
 		},
 	}
 
@@ -193,7 +280,119 @@ func (m *AgentManager) registerBuiltinAgents() {
 	}
 }
 
-// loadFromDir 从目录加载 Agent JSON 配置
+// ensureDefaults 将内置 Agent 定义写入磁盘（仅当对应目录/文件不存在时）
+func (m *AgentManager) ensureDefaults(dir string) {
+	if dir == "" {
+		return
+	}
+	os.MkdirAll(dir, 0755)
+
+	for name, agent := range m.agents {
+		dirPath := filepath.Join(dir, name)
+		jsonPath := filepath.Join(dirPath, "agent.json")
+		legacyPath := filepath.Join(dir, name+".json")
+
+		if _, err := os.Stat(dirPath); err == nil {
+			continue
+		}
+		if _, err := os.Stat(legacyPath); err == nil {
+			continue
+		}
+
+		os.MkdirAll(dirPath, 0755)
+		data, err := json.MarshalIndent(agent, "", "  ")
+		if err != nil {
+			continue
+		}
+		os.WriteFile(jsonPath, data, 0644)
+		logger.Debug("写入默认 Agent 定义", "name", name, "path", jsonPath)
+	}
+}
+
+// Install 安装 Agent（从 JSON 文件或目录）
+func (m *AgentManager) Install(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("路径不存在: %s", path)
+	}
+
+	var agent Agent
+	if info.IsDir() {
+		// 目录格式 — 查找 agent.json
+		jsonPath := filepath.Join(path, "agent.json")
+		data, err := os.ReadFile(jsonPath)
+		if err != nil {
+			return fmt.Errorf("目录中未找到 agent.json: %s", path)
+		}
+		if err := json.Unmarshal(data, &agent); err != nil {
+			return fmt.Errorf("解析 agent.json 失败: %w", err)
+		}
+		if agent.Name == "" {
+			agent.Name = filepath.Base(path)
+		}
+		// 复制整个目录到 agents/<name>/
+		homeDir, _ := os.UserHomeDir()
+		destDir := filepath.Join(homeDir, ".jiasine", "agents", agent.Name)
+		if err := copyDir(path, destDir); err != nil {
+			return fmt.Errorf("复制 Agent 目录失败: %w", err)
+		}
+	} else {
+		// 单文件 JSON 格式
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("读取文件失败: %w", err)
+		}
+		if err := json.Unmarshal(data, &agent); err != nil {
+			return fmt.Errorf("JSON 解析失败: %w", err)
+		}
+
+		if agent.Name == "" {
+			agent.Name = strings.TrimSuffix(filepath.Base(path), ".json")
+		}
+
+		// 保存到 agents/<name>/agent.json 目录格式
+		homeDir, _ := os.UserHomeDir()
+		destDir := filepath.Join(homeDir, ".jiasine", "agents", agent.Name)
+		os.MkdirAll(destDir, 0755)
+		destPath := filepath.Join(destDir, "agent.json")
+		if err := os.WriteFile(destPath, data, 0644); err != nil {
+			return fmt.Errorf("写入失败: %w", err)
+		}
+	}
+
+	m.agents[agent.Name] = &agent
+	logger.Info("Agent 已安装", "name", agent.Name)
+	return nil
+}
+
+// Remove 卸载 Agent
+func (m *AgentManager) Remove(name string) error {
+	if _, ok := m.agents[name]; !ok {
+		return fmt.Errorf("Agent '%s' 不存在", name)
+	}
+
+	delete(m.agents, name)
+
+	homeDir, _ := os.UserHomeDir()
+
+	// 移除目录格式
+	dirPath := filepath.Join(homeDir, ".jiasine", "agents", name)
+	if _, err := os.Stat(dirPath); err == nil {
+		os.RemoveAll(dirPath)
+	}
+
+	// 移除旧的单文件格式
+	filePath := filepath.Join(homeDir, ".jiasine", "agents", name+".json")
+	os.Remove(filePath)
+
+	logger.Info("Agent 已卸载", "name", name)
+	return nil
+}
+
+// loadFromDir 从目录加载 Agent 配置
+// 支持两种格式：
+//  1. <dir>/<name>.json — 单文件 JSON 格式
+//  2. <dir>/<name>/agent.json — 子目录格式
 func (m *AgentManager) loadFromDir(dir string) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return
@@ -206,7 +405,25 @@ func (m *AgentManager) loadFromDir(dir string) {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		// 子目录格式 — 查找 agent.json
+		if entry.IsDir() {
+			name := entry.Name()
+			jsonPath := filepath.Join(dir, name, "agent.json")
+			if data, err := os.ReadFile(jsonPath); err == nil {
+				var agent Agent
+				if err := json.Unmarshal(data, &agent); err == nil {
+					if agent.Name == "" {
+						agent.Name = name
+					}
+					m.agents[name] = &agent
+					logger.Debug("从目录加载 Agent", "name", name)
+				}
+			}
+			continue
+		}
+
+		// 单文件 JSON 格式
+		if !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 

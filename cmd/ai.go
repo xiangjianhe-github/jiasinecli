@@ -10,13 +10,16 @@ import (
 	"github.com/xiangjianhe-github/jiasinecli/internal/ai"
 	"github.com/xiangjianhe-github/jiasinecli/internal/banner"
 	"github.com/xiangjianhe-github/jiasinecli/internal/config"
+	"github.com/xiangjianhe-github/jiasinecli/internal/render"
+	"github.com/xiangjianhe-github/jiasinecli/internal/tui"
 	"github.com/spf13/cobra"
 )
 
 var (
-	aiProvider string // --provider 标志
-	aiModel    string // --model 标志
-	aiAgent    string // --agent 标志
+	aiProvider  string // --provider 标志
+	aiModel     string // --model 标志
+	aiAgent     string // --agent 标志
+	aiWebSearch bool   // --web 标志
 )
 
 // getAIManager 懒加载 AI 管理器，自动检测并生成配置
@@ -157,6 +160,11 @@ var aiChatCmd = &cobra.Command{
 			}
 		}
 
+		// 设置联网搜索
+		if aiWebSearch {
+			aiMgr.SetWebSearch(true)
+		}
+
 		resp, err := aiMgr.ChatWith(aiProvider, prompt)
 		if err != nil {
 			return err
@@ -227,6 +235,10 @@ var aiProviderSwitchCmd = &cobra.Command{
 		if err := aiMgr.SetActive(args[0]); err != nil {
 			return err
 		}
+		// 持久化到配置文件
+		if err := config.SetActiveProvider(args[0]); err != nil {
+			fmt.Printf("%s⚠ 已在内存中切换，但持久化到配置文件失败: %s%s\n", banner.Yellow, err.Error(), banner.Reset)
+		}
 		fmt.Printf("已切换到 AI 提供商: %s%s%s\n", banner.BrightGreen, args[0], banner.Reset)
 		return nil
 	},
@@ -274,9 +286,8 @@ var aiAgentRunCmd = &cobra.Command{
 	Long: `使用指定的 Agent 处理消息。
 
 示例:
-  jiasinecli ai agent run assistant "帮我总结这段文字"
-  jiasinecli ai agent run coder "用 Rust 写快速排序"
-  jiasinecli ai agent run translator "translate to japanese: hello world"`,
+  jiasinecli ai agent run general "帮我总结这段文字"
+  jiasinecli ai agent run explore "分析项目架构"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		agentName := args[0]
@@ -289,6 +300,34 @@ var aiAgentRunCmd = &cobra.Command{
 		}
 
 		printAIResponse(resp)
+		return nil
+	},
+}
+
+var aiAgentInstallCmd = &cobra.Command{
+	Use:   "install [path]",
+	Short: "安装 Agent (从 JSON 文件或目录)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		agentMgr := getAgentManager()
+		if err := agentMgr.Install(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Agent 安装成功\n")
+		return nil
+	},
+}
+
+var aiAgentRemoveCmd = &cobra.Command{
+	Use:   "remove [name]",
+	Short: "卸载 Agent",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		agentMgr := getAgentManager()
+		if err := agentMgr.Remove(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("Agent '%s' 已卸载\n", args[0])
 		return nil
 	},
 }
@@ -411,7 +450,8 @@ var aiConnectCmd = &cobra.Command{
 	Short: "选择 AI 模型并连接对话",
 	Long: `交互式选择要连接的 AI 服务商，然后进入对话模式。
 
-会列出所有可用的 AI 提供商供选择，选择后自动进入 AI 交互模式。
+使用 ↑/↓ 箭头键选择，Enter 确认，Esc 取消。
+选择后自动进入 AI 交互对话模式。
 
 示例:
   jiasinecli ai connect`,
@@ -426,43 +466,39 @@ var aiConnectCmd = &cobra.Command{
 			return fmt.Errorf("未配置任何可用的 AI 提供商")
 		}
 
-		// 显示选择列表
-		fmt.Printf("\n%s🤖 选择要连接的 AI 模型%s\n", banner.Bold+banner.BrightCyan, banner.Reset)
-		fmt.Println(strings.Repeat("─", 50))
+		// 构建选择项
+		options := make([]tui.SelectOption, len(providers))
+		defaultIdx := 0
 		for i, p := range providers {
-			activeTag := ""
-			if p.Active {
-				activeTag = fmt.Sprintf(" %s(当前)%s", banner.BrightGreen, banner.Reset)
+			options[i] = tui.SelectOption{
+				Label:       p.Name,
+				Description: p.DefaultModel,
+				Active:      p.Active,
 			}
-			fmt.Printf("  %s%d%s. %-15s %s%s%s%s\n",
-				banner.BrightCyan, i+1, banner.Reset,
-				p.Name, banner.Dim, p.DefaultModel, banner.Reset, activeTag)
-		}
-		fmt.Println(strings.Repeat("─", 50))
-
-		// 读取用户选择
-		fmt.Printf("\n请输入编号 (1-%d): ", len(providers))
-		scanner := bufio.NewScanner(os.Stdin)
-		if !scanner.Scan() {
-			return fmt.Errorf("读取输入失败")
-		}
-		input := strings.TrimSpace(scanner.Text())
-
-		// 解析选择
-		var choice int
-		if _, err := fmt.Sscanf(input, "%d", &choice); err != nil || choice < 1 || choice > len(providers) {
-			return fmt.Errorf("无效选择: %s (请输入 1-%d)", input, len(providers))
+			if p.Active {
+				defaultIdx = i
+			}
 		}
 
-		selected := providers[choice-1]
+		// 交互式选择 (↑/↓ 箭头键)
+		fmt.Println()
+		idx, err := tui.Select("选择要连接的 AI 模型", options, defaultIdx)
+		if err != nil {
+			return nil // 用户取消
+		}
+
+		selected := providers[idx]
 		if err := aiMgr.SetActive(selected.Key); err != nil {
 			return fmt.Errorf("切换提供商失败: %w", err)
 		}
 
-		fmt.Printf("\n%s✓ 已选择 %s (%s)%s\n",
+		// 持久化到配置文件
+		_ = config.SetActiveProvider(selected.Key)
+
+		fmt.Printf("\n%s✓ 已连接 %s (%s)%s\n",
 			banner.BrightGreen, selected.Name, selected.DefaultModel, banner.Reset)
 
-		// 设置 provider 标志后进入交互模式
+		// 进入交互模式
 		aiProvider = selected.Key
 		return enterAIInteractive("")
 	},
@@ -472,7 +508,7 @@ var aiConnectCmd = &cobra.Command{
 
 func printAIResponse(resp *ai.ChatResponse) {
 	fmt.Println()
-	fmt.Println(resp.Content)
+	fmt.Println(render.Markdown(resp.Content))
 	fmt.Println()
 	fmt.Printf("%s[%s · %s · tokens: %d]%s\n",
 		banner.Dim, resp.Provider, resp.Model, resp.TotalTokens, banner.Reset)
@@ -494,6 +530,11 @@ func enterAIInteractive(agentName string) error {
 		}
 	}
 
+	// 2.5 设置联网搜索（来自 --web 标志）
+	if aiWebSearch {
+		aiMgr.SetWebSearch(true)
+	}
+
 	// 3. 连接验证 — 发送一条极短的测试请求
 	providerName, modelName := aiMgr.ActiveProviderInfo()
 	fmt.Printf("\n%s正在连接 %s (%s) ...%s", banner.Dim, providerName, modelName, banner.Reset)
@@ -507,6 +548,10 @@ func enterAIInteractive(agentName string) error {
 	fmt.Printf(" %s✓ 已连接%s\n", banner.BrightGreen, banner.Reset)
 
 	// 4. 显示欢迎信息
+	webStatus := "关闭"
+	if aiMgr.IsWebSearch() {
+		webStatus = "🌐 开启"
+	}
 	fmt.Println()
 	fmt.Printf("%s╭──────────────────────────────────────────╮%s\n", banner.Cyan, banner.Reset)
 	fmt.Printf("%s│%s  🤖 AI 交互模式                           %s│%s\n", banner.Cyan, banner.Reset, banner.Cyan, banner.Reset)
@@ -514,7 +559,8 @@ func enterAIInteractive(agentName string) error {
 	if agentName != "" {
 		fmt.Printf("%s│%s  Agent: %-33s %s│%s\n", banner.Cyan, banner.BrightCyan, agentName, banner.Cyan, banner.Reset)
 	}
-	fmt.Printf("%s│%s  输入问题开始对话，Ctrl+C 退出             %s│%s\n", banner.Cyan, banner.Dim, banner.Cyan, banner.Reset)
+	fmt.Printf("%s│%s  联网: %-35s %s│%s\n", banner.Cyan, banner.BrightCyan, webStatus, banner.Cyan, banner.Reset)
+	fmt.Printf("%s│%s  输入 help 查看命令，Ctrl+C 退出          %s│%s\n", banner.Cyan, banner.Dim, banner.Cyan, banner.Reset)
 	fmt.Printf("%s╰──────────────────────────────────────────╯%s\n", banner.Cyan, banner.Reset)
 	fmt.Println()
 
@@ -537,40 +583,55 @@ func enterAIInteractive(agentName string) error {
 	}
 
 	// 6. REPL 循环
-	scanner := bufio.NewScanner(os.Stdin)
-	// 设置更大的缓冲区（1MB），允许较长的输入
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-
-	// 捕获 Ctrl+C
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-
-	// 用 goroutine 监听 Ctrl+C
-	done := make(chan bool, 1)
+	// 使用 goroutine 读取 stdin，让 select 可以同时监听 Ctrl+C 信号
+	// 在 Windows 上，Go 的 signal handler 返回 TRUE(已处理)，
+	// 不会中断 scanner.Scan() 的阻塞读取，因此必须用 goroutine + select 模式
+	type inputLine struct {
+		text string
+		ok   bool
+	}
+	inputCh := make(chan inputLine, 1)
 	go func() {
-		<-sigChan
-		fmt.Printf("\n\n%s👋 已退出 AI 模式%s\n\n", banner.Dim, banner.Reset)
-		done <- true
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			inputCh <- inputLine{text: scanner.Text(), ok: true}
+		}
+		// EOF 或读取错误
+		inputCh <- inputLine{ok: false}
 	}()
 
-	for {
-		// 显示提示符
-		fmt.Printf("%sAI> %s", banner.BrightCyan, banner.Reset)
+	// 捕获 Ctrl+C — 防止进程直接终止
+	sigChan := make(chan os.Signal, 2)
+	signal.Notify(sigChan, os.Interrupt)
 
-		// 非阻塞检查是否收到退出信号
-		select {
-		case <-done:
-			signal.Stop(sigChan)
-			return nil
-		default:
+	for {
+		// 显示提示符（带联网标记）
+		if aiMgr.IsWebSearch() {
+			fmt.Printf("%s🌐 AI> %s", banner.BrightCyan, banner.Reset)
+		} else {
+			fmt.Printf("%sAI> %s", banner.BrightCyan, banner.Reset)
 		}
 
-		if !scanner.Scan() {
-			// EOF 或错误
+		// 同时等待用户输入和 Ctrl+C 信号
+		var input string
+		exit := false
+		select {
+		case <-sigChan:
+			fmt.Printf("\n\n%s👋 已退出 AI 模式%s\n\n", banner.Dim, banner.Reset)
+			exit = true
+		case res := <-inputCh:
+			if !res.ok {
+				// EOF — 退出
+				exit = true
+			} else {
+				input = strings.TrimSpace(res.text)
+			}
+		}
+		if exit {
 			break
 		}
 
-		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
 			continue
 		}
@@ -588,6 +649,15 @@ func enterAIInteractive(agentName string) error {
 				history = append(history, ai.Message{Role: ai.RoleSystem, Content: agentSystem})
 			}
 			fmt.Printf("%s对话历史已清空%s\n\n", banner.Dim, banner.Reset)
+			continue
+		}
+		if lower == "web" || lower == "search" {
+			enabled := aiMgr.ToggleWebSearch()
+			if enabled {
+				fmt.Printf("%s🌐 联网搜索已开启%s\n\n", banner.BrightGreen, banner.Reset)
+			} else {
+				fmt.Printf("%s📴 联网搜索已关闭%s\n\n", banner.Dim, banner.Reset)
+			}
 			continue
 		}
 		if lower == "help" {
@@ -612,9 +682,13 @@ func enterAIInteractive(agentName string) error {
 			continue
 		}
 
-		// 显示回复
-		fmt.Println(resp.Content)
-		fmt.Printf("%s[tokens: %d]%s\n\n", banner.Dim, resp.TotalTokens, banner.Reset)
+		// 显示回复 (Markdown 渲染 + 语法高亮)
+		fmt.Println(render.Markdown(resp.Content))
+		webLabel := ""
+		if aiMgr.IsWebSearch() {
+			webLabel = " · 🌐联网"
+		}
+		fmt.Printf("%s[tokens: %d%s]%s\n\n", banner.Dim, resp.TotalTokens, webLabel, banner.Reset)
 
 		// 加助手回复到历史
 		history = append(history, ai.Message{Role: ai.RoleAssistant, Content: resp.Content})
@@ -634,6 +708,16 @@ func enterAIInteractive(agentName string) error {
 		}
 	}
 
+	// 清理: 排空残留信号后再恢复默认行为，防止 Windows 上
+	// 残留的 CTRL_C_EVENT 在 signal.Stop 后触发默认终止
+	for {
+		select {
+		case <-sigChan:
+			continue
+		default:
+		}
+		break
+	}
 	signal.Stop(sigChan)
 	return nil
 }
@@ -642,6 +726,7 @@ func printAIChatHelp() {
 	fmt.Printf(`
 %s AI 交互模式命令:%s
   直接输入文字       与 AI 对话 (支持多轮上下文)
+  %sweb%s / %ssearch%s      切换联网搜索 (开/关)
   %sclear%s / %sreset%s     清空对话历史
   %sexit%s / %squit%s       退出 AI 模式
   %shelp%s               显示此帮助
@@ -649,6 +734,7 @@ func printAIChatHelp() {
 
 `,
 		banner.BrightCyan, banner.Reset,
+		banner.BrightGreen, banner.Reset, banner.BrightGreen, banner.Reset,
 		banner.BrightGreen, banner.Reset, banner.BrightGreen, banner.Reset,
 		banner.BrightGreen, banner.Reset, banner.BrightGreen, banner.Reset,
 		banner.BrightGreen, banner.Reset,
@@ -661,6 +747,7 @@ func init() {
 	aiChatCmd.Flags().StringVarP(&aiProvider, "provider", "p", "", "指定 AI 提供商 (openai/claude/gemini/qwen/deepseek)")
 	aiChatCmd.Flags().StringVarP(&aiModel, "model", "m", "", "指定模型")
 	aiChatCmd.Flags().StringVarP(&aiAgent, "agent", "a", "", "使用指定 Agent")
+	aiChatCmd.Flags().BoolVarP(&aiWebSearch, "web", "w", false, "启用联网搜索")
 
 	// 组装子命令
 	aiProviderCmd.AddCommand(aiProviderListCmd)
@@ -668,6 +755,8 @@ func init() {
 
 	aiAgentCmd.AddCommand(aiAgentListCmd)
 	aiAgentCmd.AddCommand(aiAgentRunCmd)
+	aiAgentCmd.AddCommand(aiAgentInstallCmd)
+	aiAgentCmd.AddCommand(aiAgentRemoveCmd)
 
 	aiSkillCmd.AddCommand(aiSkillListCmd)
 	aiSkillCmd.AddCommand(aiSkillInstallCmd)

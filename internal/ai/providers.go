@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -73,6 +74,12 @@ func (p *openaiProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
+	}
+	// OpenAI: 启用联网搜索 (web_search tool)
+	if req.WebSearch {
+		body["tools"] = []map[string]interface{}{
+			{"type": "web_search_preview"},
+		}
 	}
 
 	data, err := json.Marshal(body)
@@ -160,8 +167,9 @@ type claudeProvider struct {
 
 func newClaude(cfg ProviderConfig) (Provider, error) {
 	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://api.anthropic.com/v1"
+		cfg.BaseURL = "https://api.anthropic.com"
 	}
+	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	return &claudeProvider{
 		cfg:    cfg,
 		client: &http.Client{Timeout: 120 * time.Second},
@@ -182,6 +190,11 @@ func (p *claudeProvider) DefaultModel() string {
 }
 
 func (p *claudeProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
+	return p.chatNative(req)
+}
+
+// chatNative 使用 Anthropic 原生 Messages API
+func (p *claudeProvider) chatNative(req *ChatRequest) (*ChatResponse, error) {
 	model := req.Model
 	if model == "" {
 		model = p.DefaultModel()
@@ -215,13 +228,35 @@ func (p *claudeProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 	if req.Temperature > 0 {
 		body["temperature"] = req.Temperature
 	}
+	// Claude: 启用联网搜索 (web_search tool)
+	if req.WebSearch {
+		body["tools"] = []map[string]interface{}{
+			{
+				"type": "web_search_20250305",
+				"name": "web_search",
+			},
+		}
+	}
 
 	data, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequest("POST", p.cfg.BaseURL+"/messages", bytes.NewReader(data))
+	// 智能拼接 URL:
+	//   已含 /messages       → 直接用 (如 https://proxy.com/v1/messages)
+	//   已含 /v1             → 加 /messages (如 https://api.anthropic.com/v1)
+	//   仅域名               → 加 /v1/messages (如 https://proxy.com)
+	apiURL := strings.TrimRight(p.cfg.BaseURL, "/")
+	if strings.HasSuffix(apiURL, "/messages") {
+		// 已包含完整路径，直接用
+	} else if strings.HasSuffix(apiURL, "/v1") {
+		apiURL += "/messages"
+	} else {
+		apiURL += "/v1/messages"
+	}
+
+	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -342,6 +377,12 @@ func (p *geminiProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 	if req.Temperature > 0 {
 		body["generationConfig"] = map[string]interface{}{
 			"temperature": req.Temperature,
+		}
+	}
+	// Gemini: 启用联网搜索 (Google Search grounding)
+	if req.WebSearch {
+		body["tools"] = []map[string]interface{}{
+			{"google_search": map[string]interface{}{}},
 		}
 	}
 
@@ -466,6 +507,10 @@ func (p *qwenProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
 	}
+	// Qwen: 启用联网搜索
+	if req.WebSearch {
+		body["enable_search"] = true
+	}
 
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -573,6 +618,12 @@ func (p *deepSeekProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
+	}
+	// DeepSeek: 启用联网搜索
+	if req.WebSearch {
+		body["tools"] = []map[string]interface{}{
+			{"type": "web_search"},
+		}
 	}
 
 	data, err := json.Marshal(body)

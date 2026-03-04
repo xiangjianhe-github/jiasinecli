@@ -12,18 +12,27 @@ import (
 // ANSI 色彩常量 — 配色参考 icon.json Lottie 动画
 // 青色系: #5ef8db → BrightCyan  蓝色系: #8dadf2 → BrightBlue  青蓝: #31c9e3 → Cyan
 const (
-	Reset       = "\033[0m"
-	Bold        = "\033[1m"
-	Dim         = "\033[2m"
-	Italic      = "\033[3m"
-	Cyan        = "\033[36m"
-	Blue        = "\033[34m"
-	Green       = "\033[32m"
-	Yellow      = "\033[33m"
-	White       = "\033[97m"
-	BrightCyan  = "\033[96m"
-	BrightBlue  = "\033[94m"
-	BrightGreen = "\033[92m"
+	Reset         = "\033[0m"
+	Bold          = "\033[1m"
+	Dim           = "\033[2m"
+	Italic        = "\033[3m"
+	Underline     = "\033[4m"
+	Cyan          = "\033[36m"
+	Blue          = "\033[34m"
+	Green         = "\033[32m"
+	Yellow        = "\033[33m"
+	Red           = "\033[31m"
+	Magenta       = "\033[35m"
+	White         = "\033[97m"
+	BrightCyan    = "\033[96m"
+	BrightBlue    = "\033[94m"
+	BrightGreen   = "\033[92m"
+	BrightYellow  = "\033[93m"
+	BrightRed     = "\033[91m"
+	BrightMagenta = "\033[95m"
+	// 背景色
+	BgDarkGray = "\033[48;5;236m"
+	BgReset    = "\033[49m"
 )
 
 // asciiArt 是 jiasinecli 的 ANSI 渐变 ASCII 艺术字
@@ -31,9 +40,9 @@ const (
 func asciiArt() string {
 	// 使用 block/modern 风格字体
 	lines := []string{
-		`     ╦╦╔═╗╔═╗╦╔╗╔╔═╗   ╔═╗╦  ╦`,
-		`     ║║╠═╣╚═╗║║║║║╣    ║  ║  ║`,
-		`    ╚╝╩╩ ╩╚═╝╩╝╚╝╚═╝   ╚═╝╩═╝╩`,
+		`                   ╦╦╔═╗╔═╗╦╔╗╔╔═╗    ╔═╗╦  ╦`,
+		`                   ║║╠═╣╚═╗║║║║║╣  ══ ║  ║  ║`,
+		`                 ╚═╝╩╩ ╩╚═╝╩╝╚╝╚═╝    ╚═╝╩═╝╩`,
 	}
 
 	// 渐变色序列
@@ -57,9 +66,9 @@ func asciiArt() string {
 func Logo() string {
 	art := asciiArt()
 	box := fmt.Sprintf(
-		"%s     ╔══════════════════════════════════════════════════════════════════╗\n"+
-			"     ║  %s⚡ Jiasine CLI%s  — Cross-platform multi-language support system  %s║\n"+
-			"     ╚══════════════════════════════════════════════════════════════════╝%s",
+		"%s  ╔══════════════════════════════════════════════════════════════════╗\n"+
+			"  ║  %s⚡ Jiasine CLI%s  — Cross-platform multi-language support system  %s║\n"+
+			"  ╚══════════════════════════════════════════════════════════════════╝%s",
 		Dim+BrightBlue,
 		Bold+BrightGreen, Dim+BrightBlue, Dim+BrightBlue,
 		Reset,
