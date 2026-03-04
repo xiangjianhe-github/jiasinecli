@@ -1,0 +1,14 @@
+{
+  "name": "jiasine-ts-test",
+  "version": "1.0.0",
+  "description": "Jiasine CLI TypeScript 测试资产",
+  "private": true,
+  "scripts": {
+    "start": "npx tsx jiasine_ts_test.ts",
+    "process": "npx tsx jiasine_ts_process.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

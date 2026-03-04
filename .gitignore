@@ -1,0 +1,47 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build output
+dist/
+build/
+
+# Test binary / coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config with secrets
+config.yaml
+.env
+
+# Logs
+*.log
+logs/
+
+# Plugin binaries (keep manifests)
+plugins/*/bin/
+
+# Windows resources (generated)
+*.syso
+assets/app.ico
+assets/app.rc
+assets/app.manifest

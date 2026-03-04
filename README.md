@@ -13,8 +13,11 @@ Jiasine 系统统一命令行工具，Go 作为胶水层统一调用底层能力
 │  Plugin    │   Bridge       │     Service            │
 │            │                │                        │
 │  可执行文件  │  C 动态库       │  HTTP 服务 (Python)    │
-│  共享库     │  Rust 动态库    │  gRPC 服务 (C#)        │
-│            │  .NET AOT DLL  │  子进程调用             │
+│  共享库     │  Rust 动态库    │  HTTP 服务 (C#)        │
+│            │  Obj-C 动态库   │  HTTP 服务 (JS/TS)     │
+│            │  .NET AOT DLL  │  HTTP 服务 (Java)      │
+│            │                │  子进程调用             │
+│            │                │  Swift 编译执行         │
 └────────────┴────────────────┴────────────────────────┘
 ```
 
@@ -22,8 +25,8 @@ Jiasine 系统统一命令行工具，Go 作为胶水层统一调用底层能力
 
 | 层 | 说明 | 适用场景 |
 |---|---|---|
-| **Bridge** | FFI 调用动态库 (syscall/dlopen) | C、Rust、.NET Native AOT 编译的 .dll/.so/.dylib |
-| **Service** | HTTP/gRPC/进程调用 | Python、C# 独立运行服务 |
+| **Bridge** | FFI 调用动态库 (syscall/dlopen) | C、Rust、Objective-C、.NET Native AOT 编译的 .dll/.so/.dylib |
+| **Service** | HTTP/进程调用 | Python、C#、JavaScript、TypeScript、Java、Swift 独立运行服务 |
 | **Plugin** | 可执行文件插件 | 用户扩展功能 |
 
 ## 快速开始
@@ -41,7 +44,7 @@ jiasinecli --help
 # 查看版本
 jiasinecli version
 
-# 运行集成测试 (需要 gcc/rust/python/dotnet)
+# 运行集成测试 (需要 gcc/rust/python/dotnet/node 等)
 jiasinecli test --lang all
 ```
 
@@ -56,6 +59,11 @@ jiasinecli
 │   ├── --lang python   # 仅测试 Python
 │   ├── --lang rust     # 仅测试 Rust
 │   ├── --lang csharp   # 仅测试 C#
+│   ├── --lang js       # 仅测试 JavaScript
+│   ├── --lang typescript # 仅测试 TypeScript
+│   ├── --lang java     # 仅测试 Java
+│   ├── --lang swift    # 仅测试 Swift
+│   ├── --lang objc     # 仅测试 Objective-C
 │   ├── --lang all      # 测试所有语言
 │   └── status          # 查看工具链就绪状态
 ├── bridge              # 桥接层 (FFI 动态库)
@@ -94,7 +102,7 @@ MAJOR.MINOR.PATCH[-prerelease][+buildmetadata]
 
 ## 集成测试
 
-项目包含 4 种语言的测试用例，验证 Go 胶水层对各语言资产的调用能力：
+项目包含 9 种语言的测试用例，验证 Go 胶水层对各语言资产的调用能力：
 
 | 语言 | 调用方式 | 测试项 | 源码 |
 |---|---|---|---|
@@ -102,6 +110,11 @@ MAJOR.MINOR.PATCH[-prerelease][+buildmetadata]
 | **Python** | HTTP + 子进程 | health, version, add, reverse, fibonacci, upper | `tests/python/` |
 | **Rust** | FFI (cdylib) | add, get_version, reverse_string, hash, health | `tests/rust/` |
 | **C#** | HTTP (ASP.NET) | health, version, add, reverse, factorial | `tests/csharp/` |
+| **JavaScript** | HTTP + 子进程 | health, version, add, reverse, fibonacci, factorial | `tests/js/` |
+| **TypeScript** | HTTP + 子进程 | health, version, add, reverse, fibonacci, factorial | `tests/typescript/` |
+| **Java** | HTTP + 子进程 | health, version, add, reverse, fibonacci, factorial | `tests/java/` |
+| **Swift** | 编译 + 子进程 + HTTP | health, version, add, reverse, fibonacci, factorial | `tests/swift/` |
+| **Objective-C** | FFI (DLL/SO) | add, get_version, reverse_string, health | `tests/objc/` |
 
 ```bash
 # 查看工具链状态
@@ -213,7 +226,12 @@ JiasineCli/
 │   ├── c/                           # C 共享库测试
 │   ├── python/                      # Python HTTP/进程 测试
 │   ├── rust/                        # Rust cdylib 测试
-│   └── csharp/                      # C# ASP.NET 测试
+│   ├── csharp/                      # C# ASP.NET 测试
+│   ├── js/                          # JavaScript HTTP/进程 测试
+│   ├── typescript/                  # TypeScript HTTP/进程 测试
+│   ├── java/                        # Java HTTP/进程 测试
+│   ├── swift/                       # Swift 编译/HTTP/进程 测试
+│   └── objc/                        # Objective-C 共享库测试
 ├── config.example.yaml              # 配置示例
 ├── build.ps1                        # Windows 构建脚本 (7 targets)
 ├── Makefile                         # Linux/macOS 构建脚本 (7 targets)
@@ -228,3 +246,4 @@ JiasineCli/
 - **日志**: [Zap](https://go.uber.org/zap) (结构化日志)
 - **FFI**: syscall (Windows DLL) / cgo (Unix .so/.dylib)
 - **构建**: Go 原生交叉编译，CGO_ENABLED=0 纯静态链接
+- **支持语言**: C, Python, Rust, C#, JavaScript, TypeScript, Java, Swift, Objective-C

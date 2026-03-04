@@ -1,0 +1,123 @@
+# Jiasine CLI 配置文件示例
+# 复制到 ~/.jiasine/config.yaml 并根据需要修改
+
+# 日志配置
+log:
+  level: info          # debug, info, warn, error
+  format: text         # text, json
+  output: stdout       # stdout, file
+  file: ""             # 日志文件路径 (output=file 时有效)
+
+# 后端服务配置
+# 通过 HTTP/gRPC/进程方式调用的独立服务
+services:
+  # Python AI 服务示例
+  ai-service:
+    type: http
+    address: "http://localhost:8001"
+    health_check: "/health"
+    timeout: 30
+    description: "AI 推理服务 (Python)"
+
+  # C# 业务服务示例
+  business-api:
+    type: http
+    address: "http://localhost:5000"
+    health_check: "/healthz"
+    timeout: 10
+    description: "业务 API 服务 (C#)"
+
+  # Python 脚本 (进程调用) 示例
+  data-processor:
+    type: process
+    command: "python"
+    args: ["-m", "jiasine.processor"]
+    workdir: "/opt/jiasine/python"
+    env:
+      PYTHONPATH: "/opt/jiasine/python"
+    timeout: 60
+    description: "数据处理工具 (Python)"
+
+  # JavaScript (Node.js) 服务示例
+  js-worker:
+    type: http
+    address: "http://localhost:9903"
+    health_check: "/health"
+    timeout: 15
+    description: "JS 工作服务 (Node.js)"
+
+  # TypeScript 服务示例
+  ts-api:
+    type: http
+    address: "http://localhost:9904"
+    health_check: "/health"
+    timeout: 15
+    description: "TS API 服务 (tsx)"
+
+  # Java 服务示例
+  java-engine:
+    type: http
+    address: "http://localhost:9905"
+    health_check: "/health"
+    timeout: 20
+    description: "业务引擎 (Java)"
+
+# 动态库桥接配置
+# 通过 FFI 调用的原生动态库
+bridges:
+  # C 原生库示例
+  core-engine:
+    type: c
+    path: "libs/core_engine"
+    platform:
+      windows: "libs/core_engine.dll"
+      darwin: "libs/libcore_engine.dylib"
+      linux: "libs/libcore_engine.so"
+    functions:
+      - "init"
+      - "process"
+      - "cleanup"
+
+  # Rust 库示例
+  crypto-lib:
+    type: rust
+    path: "libs/jiasine_crypto"
+    platform:
+      windows: "libs/jiasine_crypto.dll"
+      darwin: "libs/libjiasine_crypto.dylib"
+      linux: "libs/libjiasine_crypto.so"
+    functions:
+      - "encrypt"
+      - "decrypt"
+      - "hash"
+
+  # .NET Native AOT 示例
+  dotnet-core:
+    type: dotnet
+    path: "libs/JiasineCore"
+    platform:
+      windows: "libs/JiasineCore.dll"
+      darwin: "libs/libJiasineCore.dylib"
+      linux: "libs/libJiasineCore.so"
+    functions:
+      - "Initialize"
+      - "Execute"
+      - "GetStatus"
+
+  # Objective-C 库示例
+  objc-bridge:
+    type: objc
+    path: "libs/jiasine_objc"
+    platform:
+      windows: "libs/jiasine_objc.dll"
+      darwin: "libs/libjiasine_objc.dylib"
+      linux: "libs/libjiasine_objc.so"
+    functions:
+      - "add"
+      - "reverse_string"
+      - "health"
+
+# 插件配置
+plugins:
+  dir: ""              # 插件目录 (默认 ~/.jiasine/plugins)
+  auto_load: true      # 是否自动加载插件
