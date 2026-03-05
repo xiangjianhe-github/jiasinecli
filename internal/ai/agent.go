@@ -220,7 +220,7 @@ func BuildAssistantToolUseBlocks(content string, toolCalls []ToolCall) string {
 	return string(data)
 }
 
-// GetSystemPrompt 获取指定 Agent 的完整系统提示词（含所有已安装 Skills 上下文）
+// GetSystemPrompt 获取指定 Agent 的完整系统提示词（含 Skills 上下文）
 func (m *AgentManager) GetSystemPrompt(name string) (string, error) {
 	key := strings.ToLower(name)
 	agent, ok := m.agents[key]
@@ -228,14 +228,10 @@ func (m *AgentManager) GetSystemPrompt(name string) (string, error) {
 		return "", fmt.Errorf("Agent '%s' 不存在", name)
 	}
 	system := agent.System
-	if m.skillMgr != nil {
-		// 使用所有已安装的 Skills（不仅限于 Agent 声明的 Skills）
-		allNames := m.skillMgr.AllNames()
-		if len(allNames) > 0 {
-			ctx := m.skillMgr.BuildContext(allNames)
-			if ctx != "" {
-				system += "\n\n" + ctx
-			}
+	if m.skillMgr != nil && len(agent.Skills) > 0 {
+		ctx := m.skillMgr.BuildContext(agent.Skills)
+		if ctx != "" {
+			system += "\n\n" + ctx
 		}
 	}
 	return system, nil

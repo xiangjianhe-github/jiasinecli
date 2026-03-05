@@ -525,11 +525,11 @@ func enterAIInteractive(agentName string) error {
 		aiMgr.SetWebSearch(true)
 	}
 
-	// 3. 连接验证 — 发送一条极短的测试请求
+	// 3. 连接验证 — 发送一条极短的测试请求（不带 web search / tools，保持轻量）
 	providerName, modelName := aiMgr.ActiveProviderInfo()
 	fmt.Printf("\n%s正在连接 %s (%s) ...%s", banner.Dim, providerName, modelName, banner.Reset)
 
-	testResp, testErr := aiMgr.Chat("ping")
+	testResp, testErr := aiMgr.TestConnection()
 	if testErr != nil {
 		fmt.Printf(" %s失败%s\n", banner.Yellow, banner.Reset)
 		return fmt.Errorf("模型连接失败: %w", testErr)
@@ -605,17 +605,20 @@ func enterAIInteractive(agentName string) error {
 			history = append(history, ai.Message{Role: ai.RoleSystem, Content: agentSystem})
 		}
 
-		// 收集所有已安装 Skills 的 MCP 工具定义
+		// 收集 Agent 关联的 MCP 工具定义
 		skillMgr := getSkillManager()
-		allSkillNames := skillMgr.AllNames()
-		if len(allSkillNames) > 0 {
-			var skills []*ai.Skill
-			for _, sn := range allSkillNames {
-				if s, err := skillMgr.Get(sn); err == nil {
-					skills = append(skills, s)
+		agents := agentMgr.List()
+		for _, a := range agents {
+			if a.Name == agentName && len(a.Skills) > 0 {
+				var skills []*ai.Skill
+				for _, sn := range a.Skills {
+					if s, err := skillMgr.Get(sn); err == nil {
+						skills = append(skills, s)
+					}
 				}
+				mcpTools = ai.MCPToolDefs(skills)
+				break
 			}
-			mcpTools = ai.MCPToolDefs(skills)
 		}
 	}
 

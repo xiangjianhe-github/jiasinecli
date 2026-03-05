@@ -65,6 +65,18 @@ func NewManager(cfg AIConfig) *Manager {
 	return m
 }
 
+// TestConnection 发送最小化测试请求验证连接（不带 web search / tools）
+func (m *Manager) TestConnection() (*ChatResponse, error) {
+	provider, err := m.getProvider("")
+	if err != nil {
+		return nil, err
+	}
+	return provider.Chat(&ChatRequest{
+		Messages:  []Message{{Role: RoleUser, Content: "ping"}},
+		MaxTokens: 16,
+	})
+}
+
 // Chat 使用当前激活的提供商发送聊天请求
 func (m *Manager) Chat(prompt string) (*ChatResponse, error) {
 	return m.ChatWith("", prompt)
