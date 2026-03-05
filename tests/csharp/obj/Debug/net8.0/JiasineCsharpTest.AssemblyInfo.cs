@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("JiasineCsharpTest")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6ed5b64f0393a411a7a5797af7a8da015ee59046")]
 [assembly: System.Reflection.AssemblyProductAttribute("JiasineCsharpTest")]
 [assembly: System.Reflection.AssemblyTitleAttribute("JiasineCsharpTest")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
