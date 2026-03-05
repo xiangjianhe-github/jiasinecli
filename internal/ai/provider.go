@@ -11,9 +11,11 @@ import (
 type Role string
 
 const (
-	RoleSystem    Role = "system"
-	RoleUser      Role = "user"
-	RoleAssistant Role = "assistant"
+	RoleSystem           Role = "system"
+	RoleUser             Role = "user"
+	RoleAssistant        Role = "assistant"
+	RoleToolResult       Role = "tool_result"        // 工具执行结果（发送给 API）
+	RoleAssistantToolUse Role = "assistant_tool_use"  // 助手的工具调用原始内容（回传给 API）
 )
 
 // Message 聊天消息
@@ -30,23 +32,42 @@ type ChatRequest struct {
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream,omitempty"`
 	WebSearch   bool      `json:"web_search,omitempty"` // 是否启用联网搜索
+	Tools       []map[string]interface{} `json:"tools,omitempty"` // MCP 工具定义
 }
 
 // ChatResponse 聊天响应
 type ChatResponse struct {
-	Content      string `json:"content"`
-	Model        string `json:"model"`
-	Provider     string `json:"provider"`
-	PromptTokens int   `json:"prompt_tokens"`
-	OutputTokens int   `json:"output_tokens"`
-	TotalTokens  int   `json:"total_tokens"`
+	Content      string     `json:"content"`
+	Model        string     `json:"model"`
+	Provider     string     `json:"provider"`
+	PromptTokens int        `json:"prompt_tokens"`
+	OutputTokens int        `json:"output_tokens"`
+	TotalTokens  int        `json:"total_tokens"`
+	ToolCalls    []ToolCall `json:"tool_calls,omitempty"`  // AI 请求的工具调用
+	StopReason   string     `json:"stop_reason,omitempty"` // 停止原因: end_turn | tool_use
 }
 
 // StreamChunk 流式响应块
+// Type 标识当前块的类型，前端据此做差异化展示
 type StreamChunk struct {
-	Content string `json:"content"`
-	Done    bool   `json:"done"`
-	Error   error  `json:"-"`
+	Type       string     `json:"type"`                    // "thinking", "content", "tool_use", "usage", "error"
+	Content    string     `json:"content,omitempty"`       // 文本增量 (type=content)
+	Thinking   string     `json:"thinking,omitempty"`      // 思考/推理增量 (type=thinking)
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`    // 工具调用 (type=tool_use)
+	StopReason string     `json:"stop_reason,omitempty"`   // end_turn | tool_use
+	Usage      *TokenUsage `json:"usage,omitempty"`        // Token 用量 (type=usage)
+	Done       bool       `json:"done"`                    // 流结束标志
+	Error      error      `json:"-"`                       // 错误
+	// 用于在流结束后组装完整 ChatResponse
+	Model      string     `json:"model,omitempty"`
+	Provider   string     `json:"provider,omitempty"`
+}
+
+// TokenUsage Token 用量
+type TokenUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	OutputTokens int `json:"output_tokens"`
+	TotalTokens  int `json:"total_tokens"`
 }
 
 // Provider AI 服务提供商接口

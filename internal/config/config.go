@@ -63,10 +63,11 @@ type PluginConfig struct {
 
 // AIConfig AI 配置
 type AIConfig struct {
-	Active    string                       `yaml:"active" mapstructure:"active"`       // 当前使用的提供商
-	Providers map[string]ai.ProviderConfig `yaml:"providers" mapstructure:"providers"` // 各提供商配置
-	Agents    ai.AgentConfig               `yaml:"agents" mapstructure:"agents"`       // Agent 配置
-	Skills    ai.SkillConfig               `yaml:"skills" mapstructure:"skills"`       // Skill 配置
+	Active    string                       `yaml:"active" mapstructure:"active"`           // 当前使用的提供商
+	WebSearch bool                         `yaml:"web_search" mapstructure:"web_search"` // 默认启用联网搜索
+	Providers map[string]ai.ProviderConfig `yaml:"providers" mapstructure:"providers"`     // 各提供商配置
+	Agents    ai.AgentConfig               `yaml:"agents" mapstructure:"agents"`           // Agent 配置
+	Skills    ai.SkillConfig               `yaml:"skills" mapstructure:"skills"`           // Skill 配置
 }
 
 var cfg *AppConfig
@@ -143,6 +144,19 @@ func SetActiveProvider(name string) error {
 	return nil
 }
 
+// SetWebSearch 切换联网搜索设置并持久化到配置文件
+func SetWebSearch(enabled bool) error {
+	viper.Set("ai.web_search", enabled)
+	if err := viper.WriteConfig(); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+	// 更新内存中的配置
+	if cfg != nil {
+		cfg.AI.WebSearch = enabled
+	}
+	return nil
+}
+
 // EnsureAIConfig 检查配置文件是否存在并包含 AI 配置
 // 如果不存在，自动生成模板文件，返回文件路径和是否新建
 func EnsureAIConfig() (configPath string, created bool, err error) {
@@ -202,6 +216,7 @@ func generateAIConfigTemplate() string {
 
 ai:
   active: deepseek           # 当前使用的服务商 (修改为你要用的)
+  web_search: false          # 默认启用联网搜索 (true/false)
 
   providers:
     # DeepSeek (推荐入门，价格低)

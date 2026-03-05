@@ -20,8 +20,9 @@ type Manager struct {
 
 // AIConfig AI 总配置
 type AIConfig struct {
-	Active    string                    `yaml:"active" mapstructure:"active"`       // 当前使用的提供商
-	Providers map[string]ProviderConfig `yaml:"providers" mapstructure:"providers"` // 各提供商配置
+	Active    string                    `yaml:"active" mapstructure:"active"`           // 当前使用的提供商
+	WebSearch bool                      `yaml:"web_search" mapstructure:"web_search"` // 默认启用联网搜索
+	Providers map[string]ProviderConfig `yaml:"providers" mapstructure:"providers"`     // 各提供商配置
 }
 
 // NewManager 创建 AI 管理器
@@ -30,6 +31,7 @@ func NewManager(cfg AIConfig) *Manager {
 		providers: make(map[string]Provider),
 		configs:   cfg.Providers,
 		active:    cfg.Active,
+		webSearch: cfg.WebSearch,
 	}
 
 	// 初始化所有已启用且配置了 API Key 的提供商
@@ -116,6 +118,55 @@ func (m *Manager) ChatMessages(providerName string, messages []Message) (*ChatRe
 	}
 
 	return provider.Chat(req)
+}
+
+// ChatMessagesWithTools 使用完整消息列表 + MCP 工具进行聊天
+func (m *Manager) ChatMessagesWithTools(providerName string, messages []Message, tools []map[string]interface{}) (*ChatResponse, error) {
+	provider, err := m.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &ChatRequest{
+		Messages:  messages,
+		WebSearch: m.webSearch,
+		Tools:     tools,
+	}
+
+	return provider.Chat(req)
+}
+
+// ChatMessagesStream 流式聊天（无工具）
+func (m *Manager) ChatMessagesStream(providerName string, messages []Message) (<-chan StreamChunk, error) {
+	provider, err := m.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &ChatRequest{
+		Messages:  messages,
+		WebSearch: m.webSearch,
+		Stream:    true,
+	}
+
+	return provider.ChatStream(req)
+}
+
+// ChatMessagesWithToolsStream 流式聊天 + MCP 工具
+func (m *Manager) ChatMessagesWithToolsStream(providerName string, messages []Message, tools []map[string]interface{}) (<-chan StreamChunk, error) {
+	provider, err := m.getProvider(providerName)
+	if err != nil {
+		return nil, err
+	}
+
+	req := &ChatRequest{
+		Messages:  messages,
+		WebSearch: m.webSearch,
+		Tools:     tools,
+		Stream:    true,
+	}
+
+	return provider.ChatStream(req)
 }
 
 // SetWebSearch 设置是否启用联网搜索

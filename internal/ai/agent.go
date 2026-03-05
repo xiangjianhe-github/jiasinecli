@@ -78,7 +78,12 @@ func NewAgentManager(aiMgr *Manager, skillMgr *SkillManager, cfg AgentConfig) *A
 	return mgr
 }
 
-// Run 运行指定 Agent（单轮对话）
+// AIManager 返回内部持有的 AI 管理器
+func (m *AgentManager) AIManager() *Manager {
+	return m.aiMgr
+}
+
+// Run 运行指定 Agent（单轮对话，支持 MCP 工具调用循环）
 func (m *AgentManager) Run(agentName, prompt string) (*ChatResponse, error) {
 	agent, ok := m.agents[agentName]
 	if !ok {
@@ -94,6 +99,18 @@ func (m *AgentManager) Run(agentName, prompt string) (*ChatResponse, error) {
 		}
 	}
 
+	// 收集 MCP 工具定义
+	var mcpTools []map[string]interface{}
+	if m.skillMgr != nil && len(agent.Skills) > 0 {
+		var skills []*Skill
+		for _, name := range agent.Skills {
+			if s, err := m.skillMgr.Get(name); err == nil {
+				skills = append(skills, s)
+			}
+		}
+		mcpTools = MCPToolDefs(skills)
+	}
+
 	// 选择提供商
 	providerName := agent.Provider
 	if providerName == "" {
@@ -105,19 +122,105 @@ func (m *AgentManager) Run(agentName, prompt string) (*ChatResponse, error) {
 		return nil, err
 	}
 
-	req := &ChatRequest{
-		Model: agent.Model,
-		Messages: []Message{
-			{Role: RoleSystem, Content: system},
-			{Role: RoleUser, Content: prompt},
-		},
-		Temperature: agent.Temperature,
+	// 构建初始请求
+	messages := []Message{
+		{Role: RoleSystem, Content: system},
+		{Role: RoleUser, Content: prompt},
 	}
 
-	return provider.Chat(req)
+	executor := NewToolExecutor()
+	maxToolLoops := 10
+	var totalResponse *ChatResponse
+
+	for i := 0; i < maxToolLoops; i++ {
+		req := &ChatRequest{
+			Model:       agent.Model,
+			Messages:    messages,
+			Temperature: agent.Temperature,
+			WebSearch:   m.aiMgr.IsWebSearch(),
+			Tools:       mcpTools,
+		}
+
+		resp, err := provider.Chat(req)
+		if err != nil {
+			return nil, err
+		}
+
+		// 累加 tokens
+		if totalResponse == nil {
+			totalResponse = resp
+		} else {
+			totalResponse.Content += resp.Content
+			totalResponse.PromptTokens += resp.PromptTokens
+			totalResponse.OutputTokens += resp.OutputTokens
+			totalResponse.TotalTokens += resp.TotalTokens
+		}
+
+		// 如果没有工具调用，直接返回
+		if len(resp.ToolCalls) == 0 || resp.StopReason != "tool_use" {
+			totalResponse.Content = resp.Content
+			return totalResponse, nil
+		}
+
+		// 将助手的 tool_use 响应原始内容存入历史
+		assistantContent := BuildAssistantToolUseContent(resp)
+		messages = append(messages, Message{
+			Role:    RoleAssistantToolUse,
+			Content: assistantContent,
+		})
+
+		// 执行工具调用
+		var toolResults []map[string]interface{}
+		for _, call := range resp.ToolCalls {
+			logger.Info("🔧 执行工具", "tool", call.Name, "id", call.ID)
+			result := executor.Execute(call)
+			toolResults = append(toolResults, map[string]interface{}{
+				"type":        "tool_result",
+				"tool_use_id": result.ToolUseID,
+				"content":     result.Content,
+			})
+		}
+
+		// 将工具结果作为 user 消息发回
+		toolResultJSON, _ := json.Marshal(toolResults)
+		messages = append(messages, Message{
+			Role:    RoleToolResult,
+			Content: string(toolResultJSON),
+		})
+	}
+
+	return totalResponse, nil
 }
 
-// GetSystemPrompt 获取指定 Agent 的完整系统提示词（含 Skills 上下文）
+// BuildAssistantToolUseContent 将 AI 响应中的 text + tool_use 块序列化
+// 用于回传给 API 保持对话一致性
+func BuildAssistantToolUseContent(resp *ChatResponse) string {
+	return BuildAssistantToolUseBlocks(resp.Content, resp.ToolCalls)
+}
+
+// BuildAssistantToolUseBlocks 从文本内容 + 工具调用列表构建 assistant 内容块 JSON
+// 用于流式模式下将累积结果回传给 API
+func BuildAssistantToolUseBlocks(content string, toolCalls []ToolCall) string {
+	var blocks []interface{}
+	if content != "" {
+		blocks = append(blocks, map[string]interface{}{
+			"type": "text",
+			"text": content,
+		})
+	}
+	for _, tc := range toolCalls {
+		blocks = append(blocks, map[string]interface{}{
+			"type":  "tool_use",
+			"id":    tc.ID,
+			"name":  tc.Name,
+			"input": tc.Input,
+		})
+	}
+	data, _ := json.Marshal(blocks)
+	return string(data)
+}
+
+// GetSystemPrompt 获取指定 Agent 的完整系统提示词（含所有已安装 Skills 上下文）
 func (m *AgentManager) GetSystemPrompt(name string) (string, error) {
 	key := strings.ToLower(name)
 	agent, ok := m.agents[key]
@@ -125,10 +228,14 @@ func (m *AgentManager) GetSystemPrompt(name string) (string, error) {
 		return "", fmt.Errorf("Agent '%s' 不存在", name)
 	}
 	system := agent.System
-	if m.skillMgr != nil && len(agent.Skills) > 0 {
-		ctx := m.skillMgr.BuildContext(agent.Skills)
-		if ctx != "" {
-			system += "\n\n" + ctx
+	if m.skillMgr != nil {
+		// 使用所有已安装的 Skills（不仅限于 Agent 声明的 Skills）
+		allNames := m.skillMgr.AllNames()
+		if len(allNames) > 0 {
+			ctx := m.skillMgr.BuildContext(allNames)
+			if ctx != "" {
+				system += "\n\n" + ctx
+			}
 		}
 	}
 	return system, nil

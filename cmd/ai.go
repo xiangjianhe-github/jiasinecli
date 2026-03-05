@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/xiangjianhe-github/jiasinecli/internal/ai"
 	"github.com/xiangjianhe-github/jiasinecli/internal/banner"
@@ -63,6 +65,7 @@ loadManager:
 	cfg := config.Get()
 	mgr := ai.NewManager(ai.AIConfig{
 		Active:    cfg.AI.Active,
+		WebSearch: cfg.AI.WebSearch,
 		Providers: cfg.AI.Providers,
 	})
 
@@ -109,8 +112,8 @@ var aiCmd = &cobra.Command{
 
 直接运行 'ai' (不带子命令) 将进入 AI 交互模式。`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// 'ai' 不带子命令 → 进入交互式 AI 对话模式
-		return enterAIInteractive("")
+		// 'ai' 不带子命令 → 进入交互式 AI 对话模式（默认使用 general agent）
+		return enterAIInteractive("general")
 	},
 }
 
@@ -130,46 +133,33 @@ var aiChatCmd = &cobra.Command{
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if len(args) == 0 {
-			// 无参数 → 进入交互模式
-			return enterAIInteractive(aiAgent)
+			// 无参数 → 进入交互模式（默认使用 general agent）
+			agent := aiAgent
+			if agent == "" {
+				agent = "general"
+			}
+			return enterAIInteractive(agent)
 		}
 
-		// 有参数 → 单次对话
+		// 有参数 → 单次对话（默认使用 general agent）
 		prompt := strings.Join(args, " ")
 
-		// 如果指定了 Agent，走 Agent 流程
-		if aiAgent != "" {
-			agentMgr := getAgentManager()
-			resp, err := agentMgr.Run(aiAgent, prompt)
-			if err != nil {
-				return err
-			}
-			printAIResponse(resp)
-			return nil
+		// 走 Agent 流程（默认 general）
+		agentName := aiAgent
+		if agentName == "" {
+			agentName = "general"
 		}
+		agentMgr := getAgentManager()
 
-		// 直接调用 AI
-		aiMgr, err := getAIManager()
-		if err != nil {
-			return err
-		}
-
-		if aiProvider != "" {
-			if err := aiMgr.SetActive(aiProvider); err != nil {
-				return err
-			}
-		}
-
-		// 设置联网搜索
+		// 设置联网搜索（来自 --web 标志）
 		if aiWebSearch {
-			aiMgr.SetWebSearch(true)
+			agentMgr.AIManager().SetWebSearch(true)
 		}
 
-		resp, err := aiMgr.ChatWith(aiProvider, prompt)
+		resp, err := agentMgr.Run(agentName, prompt)
 		if err != nil {
 			return err
 		}
-
 		printAIResponse(resp)
 		return nil
 	},
@@ -365,8 +355,8 @@ var aiSkillListCmd = &cobra.Command{
 }
 
 var aiSkillInstallCmd = &cobra.Command{
-	Use:   "install [path]",
-	Short: "安装 Skill (从 JSON 文件)",
+	Use:   "install [name|path]",
+	Short: "安装 Skill (按名称、JSON/MD 文件路径或目录)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		skillMgr := getSkillManager()
@@ -498,9 +488,9 @@ var aiConnectCmd = &cobra.Command{
 		fmt.Printf("\n%s✓ 已连接 %s (%s)%s\n",
 			banner.BrightGreen, selected.Name, selected.DefaultModel, banner.Reset)
 
-		// 进入交互模式
+		// 进入交互模式（默认使用 general agent）
 		aiProvider = selected.Key
-		return enterAIInteractive("")
+		return enterAIInteractive("general")
 	},
 }
 
@@ -552,14 +542,34 @@ func enterAIInteractive(agentName string) error {
 	if aiMgr.IsWebSearch() {
 		webStatus = "🌐 开启"
 	}
+
+	// 4.1 初始化记忆系统
+	memMgr, memErr := ai.NewMemoryManager()
+	if memErr != nil {
+		fmt.Printf("%s⚠ 记忆系统初始化失败: %s%s\n", banner.Yellow, memErr.Error(), banner.Reset)
+	}
+
+	// 记忆统计
+	memStatus := "关闭"
+	if memMgr != nil {
+		sessions, activeMem, _ := memMgr.Stats()
+		if activeMem > 0 || sessions > 0 {
+			memStatus = fmt.Sprintf("🧠 %d 条记忆 · %d 次会话", activeMem, sessions)
+		} else {
+			memStatus = "🧠 就绪"
+		}
+	}
+
 	fmt.Println()
 	fmt.Printf("%s╭──────────────────────────────────────────╮%s\n", banner.Cyan, banner.Reset)
-	fmt.Printf("%s│%s  🤖 AI 交互模式                           %s│%s\n", banner.Cyan, banner.Reset, banner.Cyan, banner.Reset)
-	fmt.Printf("%s│%s  服务商: %-15s 模型: %-12s%s│%s\n", banner.Cyan, banner.BrightGreen, providerName, modelName, banner.Cyan, banner.Reset)
+	fmt.Printf("%s│%s  🤖 AI 交互模式               %s⚡ 流式输出%s %s│%s\n", banner.Cyan, banner.Reset, banner.Dim, banner.Reset, banner.Cyan, banner.Reset)
+	fmt.Printf("%s│%s  服务商: %-33s %s│%s\n", banner.Cyan, banner.BrightGreen, providerName, banner.Cyan, banner.Reset)
+	fmt.Printf("%s│%s  模型:   %-33s %s│%s\n", banner.Cyan, banner.BrightGreen, modelName, banner.Cyan, banner.Reset)
 	if agentName != "" {
-		fmt.Printf("%s│%s  Agent: %-33s %s│%s\n", banner.Cyan, banner.BrightCyan, agentName, banner.Cyan, banner.Reset)
+		fmt.Printf("%s│%s  Agent:  %-33s %s│%s\n", banner.Cyan, banner.BrightCyan, agentName, banner.Cyan, banner.Reset)
 	}
-	fmt.Printf("%s│%s  联网: %-35s %s│%s\n", banner.Cyan, banner.BrightCyan, webStatus, banner.Cyan, banner.Reset)
+	fmt.Printf("%s│%s  联网:   %-33s %s│%s\n", banner.Cyan, banner.BrightCyan, webStatus, banner.Cyan, banner.Reset)
+	fmt.Printf("%s│%s  记忆:   %-33s %s│%s\n", banner.Cyan, banner.BrightCyan, memStatus, banner.Cyan, banner.Reset)
 	fmt.Printf("%s│%s  输入 help 查看命令，Ctrl+C 退出          %s│%s\n", banner.Cyan, banner.Dim, banner.Cyan, banner.Reset)
 	fmt.Printf("%s╰──────────────────────────────────────────╯%s\n", banner.Cyan, banner.Reset)
 	fmt.Println()
@@ -567,8 +577,9 @@ func enterAIInteractive(agentName string) error {
 	// 5. 保存对话历史（上下文）
 	history := []ai.Message{}
 
-	// 如果使用 Agent，加入系统提示词
+	// 如果使用 Agent，加入系统提示词 + 收集 MCP 工具
 	var agentSystem string
+	var mcpTools []map[string]interface{}
 	if agentName != "" {
 		agentMgr := getAgentManager()
 		system, err := agentMgr.GetSystemPrompt(agentName)
@@ -577,9 +588,65 @@ func enterAIInteractive(agentName string) error {
 		} else {
 			agentSystem = system
 		}
+
+		// 注入长期记忆 + 上次会话摘要到系统提示词
+		if memMgr != nil {
+			memContext := memMgr.BuildMemoryContext()
+			if memContext != "" {
+				agentSystem += memContext
+			}
+			sessionSummary := memMgr.BuildSessionSummary()
+			if sessionSummary != "" {
+				agentSystem += sessionSummary
+			}
+		}
+
 		if agentSystem != "" {
 			history = append(history, ai.Message{Role: ai.RoleSystem, Content: agentSystem})
 		}
+
+		// 收集所有已安装 Skills 的 MCP 工具定义
+		skillMgr := getSkillManager()
+		allSkillNames := skillMgr.AllNames()
+		if len(allSkillNames) > 0 {
+			var skills []*ai.Skill
+			for _, sn := range allSkillNames {
+				if s, err := skillMgr.Get(sn); err == nil {
+					skills = append(skills, s)
+				}
+			}
+			mcpTools = ai.MCPToolDefs(skills)
+		}
+	}
+
+	// MCP 工具执行器
+	executor := ai.NewToolExecutor()
+
+	// 5.5 记忆系统: 启动会话 + 恢复上次对话
+	if memMgr != nil {
+		memMgr.StartSession(agentName, providerName, modelName)
+
+		// 尝试恢复最近 24h 内的会话消息
+		restored := memMgr.RestoreLastMessages()
+		if len(restored) > 0 {
+			// 还原对话消息到 history (追加在 system prompt 之后)
+			for _, msg := range restored {
+				history = append(history, msg)
+			}
+			turns := 0
+			for _, m := range restored {
+				if m.Role == ai.RoleUser {
+					turns++
+				}
+			}
+			fmt.Printf("%s🧠 已恢复上次对话 (%d 轮)%s\n\n", banner.Dim, turns, banner.Reset)
+
+			// 显示最近的对话内容（最多显示最近 5 条 user/assistant 消息）
+			printRestoredMessages(restored)
+		}
+
+		// 运行自动衰减
+		memMgr.AutoDecay()
 	}
 
 	// 6. REPL 循环
@@ -643,20 +710,42 @@ func enterAIInteractive(agentName string) error {
 			break
 		}
 		if lower == "clear" || lower == "reset" {
-			// 清空对话历史
+			// 清空对话历史 (保留 system prompt)
 			history = history[:0]
 			if agentSystem != "" {
 				history = append(history, ai.Message{Role: ai.RoleSystem, Content: agentSystem})
 			}
-			fmt.Printf("%s对话历史已清空%s\n\n", banner.Dim, banner.Reset)
+			// 同时开始新会话
+			if memMgr != nil {
+				_ = memMgr.SaveSession()
+				memMgr.StartSession(agentName, providerName, modelName)
+			}
+			fmt.Printf("%s对话历史已清空 (新会话)%s\n\n", banner.Dim, banner.Reset)
+			continue
+		}
+		if lower == "memory" || lower == "mem" {
+			if memMgr == nil {
+				fmt.Printf("%s记忆系统未初始化%s\n\n", banner.Yellow, banner.Reset)
+			} else {
+				printMemoryStatus(memMgr)
+			}
+			continue
+		}
+		if lower == "memory clear" || lower == "mem clear" {
+			if memMgr != nil {
+				_ = memMgr.ClearAllMemories()
+				fmt.Printf("%s🗑 已清空所有记忆%s\n\n", banner.Dim, banner.Reset)
+			}
 			continue
 		}
 		if lower == "web" || lower == "search" {
 			enabled := aiMgr.ToggleWebSearch()
+			// 持久化到配置文件
+			_ = config.SetWebSearch(enabled)
 			if enabled {
-				fmt.Printf("%s🌐 联网搜索已开启%s\n\n", banner.BrightGreen, banner.Reset)
+				fmt.Printf("%s🌐 联网搜索已开启 (已保存到配置)%s\n\n", banner.BrightGreen, banner.Reset)
 			} else {
-				fmt.Printf("%s📴 联网搜索已关闭%s\n\n", banner.Dim, banner.Reset)
+				fmt.Printf("%s📴 联网搜索已关闭 (已保存到配置)%s\n\n", banner.Dim, banner.Reset)
 			}
 			continue
 		}
@@ -668,30 +757,179 @@ func enterAIInteractive(agentName string) error {
 		// 加用户消息到历史
 		history = append(history, ai.Message{Role: ai.RoleUser, Content: input})
 
-		// 发送请求
-		fmt.Printf("%s思考中...%s", banner.Dim, banner.Reset)
-		resp, err := aiMgr.ChatMessages("", history)
-		// 清除"思考中..."
-		fmt.Printf("\r%s", strings.Repeat(" ", 20))
-		fmt.Printf("\r")
+		// 立即显示加载指示器
+		fmt.Printf("%s⏳ ...%s", banner.Dim, banner.Reset)
 
-		if err != nil {
-			fmt.Printf("%s错误: %s%s\n\n", banner.Yellow, err.Error(), banner.Reset)
-			// 移除失败的用户消息
-			history = history[:len(history)-1]
+		// ===== 流式输出 + 工具调用循环（最多 10 轮）=====
+		var fullContent string    // 累积的完整回复文本
+		var totalUsage ai.TokenUsage
+		toolLoopErr := false
+		maxToolLoops := 10
+
+		for toolIter := 0; toolIter < maxToolLoops; toolIter++ {
+			streamCh, streamErr := aiMgr.ChatMessagesWithToolsStream("", history, mcpTools)
+			if streamErr != nil {
+				fmt.Printf("\r\033[K") // 清除加载指示器
+				fmt.Printf("%s错误: %s%s\n\n", banner.Yellow, streamErr.Error(), banner.Reset)
+				history = history[:len(history)-1]
+				toolLoopErr = true
+				break
+			}
+
+			// 消费流式响应
+			var iterContent string     // 本轮累积文本
+			var iterThinking string    // 本轮思考内容
+			var iterToolCalls []ai.ToolCall
+			var iterStopReason string
+			isThinking := false        // 当前是否在输出思考内容
+			hasContent := false        // 是否已开始输出正文
+			firstChunk := true         // 是否是第一个有效 chunk
+
+			for chunk := range streamCh {
+				if chunk.Error != nil {
+					fmt.Printf("\r\033[K") // 清除加载指示器
+					fmt.Printf("%s错误: %s%s\n\n", banner.Yellow, chunk.Error.Error(), banner.Reset)
+					if toolIter == 0 && fullContent == "" {
+						history = history[:len(history)-1]
+					}
+					toolLoopErr = true
+					break
+				}
+
+				// 收到第一个 chunk 时清除加载指示器
+				if firstChunk && (chunk.Type == "thinking" || chunk.Type == "content" || chunk.Type == "tool_use") {
+					fmt.Printf("\r\033[K") // 回到行首并清除该行
+					firstChunk = false
+				}
+
+				switch chunk.Type {
+				case "thinking":
+					if !isThinking {
+						// 开始思考 — 显示思考区域头部
+						isThinking = true
+						fmt.Printf("%s%s💭 思考中...%s\n", banner.Dim, banner.Italic, banner.Reset)
+						fmt.Printf("%s", banner.Dim+banner.Italic)
+					}
+					fmt.Print(chunk.Thinking)
+					iterThinking += chunk.Thinking
+
+				case "content":
+					if isThinking {
+						// 思考结束，切换到正文
+						isThinking = false
+						fmt.Printf("%s\n", banner.Reset)
+						fmt.Printf("%s%s─ 思考完毕 ─%s\n\n", banner.Dim, banner.Italic, banner.Reset)
+					}
+					if !hasContent {
+						hasContent = true
+						fmt.Println() // 正文前换行
+					}
+					fmt.Print(chunk.Content)
+					iterContent += chunk.Content
+
+				case "tool_use":
+					if isThinking {
+						isThinking = false
+						fmt.Printf("%s\n", banner.Reset)
+					}
+					iterToolCalls = append(iterToolCalls, chunk.ToolCalls...)
+
+				case "usage":
+					iterStopReason = chunk.StopReason
+					if chunk.Usage != nil {
+						totalUsage.PromptTokens += chunk.Usage.PromptTokens
+						totalUsage.OutputTokens += chunk.Usage.OutputTokens
+						totalUsage.TotalTokens += chunk.Usage.TotalTokens
+					}
+				}
+			}
+
+			if toolLoopErr {
+				break
+			}
+
+			// 如果思考标记未关闭，关闭它
+			if isThinking {
+				fmt.Printf("%s\n", banner.Reset)
+			}
+
+			fullContent = iterContent
+
+			// 如果没有工具调用 → 完成
+			if len(iterToolCalls) == 0 || iterStopReason != "tool_use" {
+				if hasContent {
+					fmt.Println() // 正文后换行
+				}
+				break
+			}
+
+			// ---- 执行工具调用 ----
+			if hasContent {
+				fmt.Println()
+			}
+
+			// 将助手的 tool_use 响应存入历史
+			assistantContent := ai.BuildAssistantToolUseBlocks(iterContent, iterToolCalls)
+			history = append(history, ai.Message{
+				Role:    ai.RoleAssistantToolUse,
+				Content: assistantContent,
+			})
+
+			// 逐个执行工具
+			var toolResults []map[string]interface{}
+			for _, call := range iterToolCalls {
+				fmt.Printf("%s🔧 执行工具: %s%s%s\n", banner.Dim, banner.BrightCyan, call.Name, banner.Reset)
+				result := executor.Execute(call)
+				if result.IsError {
+					fmt.Printf("%s   ⚠ 工具执行出错%s\n", banner.Yellow, banner.Reset)
+				} else {
+					preview := result.Content
+					if len(preview) > 200 {
+						preview = preview[:200] + "..."
+					}
+					fmt.Printf("%s   ✓ 结果: %s%s\n", banner.Dim, preview, banner.Reset)
+				}
+				toolResults = append(toolResults, map[string]interface{}{
+					"type":        "tool_result",
+					"tool_use_id": result.ToolUseID,
+					"content":     result.Content,
+				})
+			}
+
+			// 将工具结果作为 user 消息发回
+			toolResultJSON, _ := json.Marshal(toolResults)
+			history = append(history, ai.Message{
+				Role:    ai.RoleToolResult,
+				Content: string(toolResultJSON),
+			})
+
+			// 继续循环，让 AI 基于工具结果生成最终回复 (下一轮会再次流式输出)
+		}
+
+		if toolLoopErr {
 			continue
 		}
 
-		// 显示回复 (Markdown 渲染 + 语法高亮)
-		fmt.Println(render.Markdown(resp.Content))
+		// 显示 token 统计
 		webLabel := ""
 		if aiMgr.IsWebSearch() {
 			webLabel = " · 🌐联网"
 		}
-		fmt.Printf("%s[tokens: %d%s]%s\n\n", banner.Dim, resp.TotalTokens, webLabel, banner.Reset)
+		fmt.Printf("%s[tokens: %d%s]%s\n\n", banner.Dim, totalUsage.TotalTokens, webLabel, banner.Reset)
 
 		// 加助手回复到历史
-		history = append(history, ai.Message{Role: ai.RoleAssistant, Content: resp.Content})
+		history = append(history, ai.Message{Role: ai.RoleAssistant, Content: fullContent})
+
+		// 记忆系统: 追踪每轮对话的 user + assistant 消息
+		if memMgr != nil {
+			// 追加用户消息（前面已加到 history，这里追加到记忆会话）
+			memMgr.AppendMessage(ai.Message{Role: ai.RoleUser, Content: input})
+			memMgr.AppendMessage(ai.Message{Role: ai.RoleAssistant, Content: fullContent})
+			// 每轮自动保存一次会话
+			if memMgr != nil {
+				_ = memMgr.SaveSession()
+			}
+		}
 
 		// 防止历史过长（保留最近 50 条对话）
 		maxHistory := 50
@@ -708,6 +946,39 @@ func enterAIInteractive(agentName string) error {
 		}
 	}
 
+	// ===== 退出清理: 保存会话 + 提取长期记忆 =====
+	if memMgr != nil {
+		// 保存当前会话
+		_ = memMgr.SaveSession()
+
+		// 提取长期记忆: 用 AI 分析本次对话提取值得记住的信息
+		// 只在有足够对话量时触发 (至少 2 轮)
+		userMsgCount := 0
+		for _, msg := range history {
+			if msg.Role == ai.RoleUser {
+				userMsgCount++
+			}
+		}
+		if userMsgCount >= 2 {
+			fmt.Printf("%s🧠 正在提取记忆...%s", banner.Dim, banner.Reset)
+			done := make(chan struct{})
+			go func() {
+				extractAndSaveMemories(aiMgr, memMgr, history)
+				close(done)
+			}()
+			// 最多等 15 秒让提取完成
+			select {
+			case <-done:
+				fmt.Printf(" %s✓ 完成%s\n", banner.BrightGreen, banner.Reset)
+			case <-time.After(15 * time.Second):
+				fmt.Printf(" %s(超时，后台继续)%s\n", banner.Dim, banner.Reset)
+			}
+		}
+
+		// 清理旧会话 (保留最近 30 个)
+		memMgr.CleanOldSessions(30)
+	}
+
 	// 清理: 排空残留信号后再恢复默认行为，防止 Windows 上
 	// 残留的 CTRL_C_EVENT 在 signal.Stop 后触发默认终止
 	for {
@@ -722,24 +993,140 @@ func enterAIInteractive(agentName string) error {
 	return nil
 }
 
+// printRestoredMessages 显示恢复的会话历史（最多显示最近 5 条 user/assistant 消息）
+func printRestoredMessages(messages []ai.Message) {
+	// 过滤出 user/assistant 消息（跳过 system, tool_result, assistant_tool_use）
+	type displayMsg struct {
+		role    ai.Role
+		content string
+	}
+	var visible []displayMsg
+	for _, m := range messages {
+		if m.Role == ai.RoleUser || m.Role == ai.RoleAssistant {
+			visible = append(visible, displayMsg{role: m.Role, content: m.Content})
+		}
+	}
+	if len(visible) == 0 {
+		return
+	}
+
+	// 如果超过 5 条，只显示最后 5 条
+	showCount := len(visible)
+	startIdx := 0
+	if showCount > 5 {
+		startIdx = showCount - 5
+		fmt.Printf("%s  ... 省略了 %d 条更早的对话 ...%s\n\n", banner.Dim, startIdx, banner.Reset)
+	}
+
+	for i := startIdx; i < showCount; i++ {
+		msg := visible[i]
+		content := msg.content
+		// 截断过长消息
+		lines := strings.Split(content, "\n")
+		if len(lines) > 6 {
+			content = strings.Join(lines[:5], "\n") + fmt.Sprintf("\n%s  ... (%d 行已省略)%s", banner.Dim, len(lines)-5, banner.Reset)
+		} else if len(content) > 300 {
+			content = content[:297] + "..."
+		}
+
+		if msg.role == ai.RoleUser {
+			fmt.Printf("  %s👤 你:%s %s\n", banner.BrightCyan, banner.Reset, content)
+		} else {
+			fmt.Printf("  %s🤖 AI:%s %s\n", banner.BrightGreen, banner.Reset, content)
+		}
+	}
+	fmt.Println()
+}
+
 func printAIChatHelp() {
 	fmt.Printf(`
 %s AI 交互模式命令:%s
-  直接输入文字       与 AI 对话 (支持多轮上下文)
+  直接输入文字       与 AI 对话 (流式输出 · 支持多轮上下文)
   %sweb%s / %ssearch%s      切换联网搜索 (开/关)
-  %sclear%s / %sreset%s     清空对话历史
+  %smemory%s / %smem%s      查看记忆状态
+  %smem clear%s          清空所有记忆
+  %sclear%s / %sreset%s     清空对话历史 (开始新会话)
   %sexit%s / %squit%s       退出 AI 模式
   %shelp%s               显示此帮助
   %sCtrl+C%s             退出 AI 模式
+
+%s提示:%s AI 回复采用流式输出 (打字机效果)
+      支持思考模型的推理过程可视化 (灰色斜体显示)
 
 `,
 		banner.BrightCyan, banner.Reset,
 		banner.BrightGreen, banner.Reset, banner.BrightGreen, banner.Reset,
 		banner.BrightGreen, banner.Reset, banner.BrightGreen, banner.Reset,
+		banner.BrightGreen, banner.Reset,
+		banner.BrightGreen, banner.Reset, banner.BrightGreen, banner.Reset,
 		banner.BrightGreen, banner.Reset, banner.BrightGreen, banner.Reset,
 		banner.BrightGreen, banner.Reset,
 		banner.BrightGreen, banner.Reset,
+		banner.Dim, banner.Reset,
 	)
+}
+
+// printMemoryStatus 显示记忆系统状态
+func printMemoryStatus(memMgr *ai.MemoryManager) {
+	sessions, activeMem, expiredMem := memMgr.Stats()
+	fmt.Printf("\n%s🧠 记忆系统状态%s\n", banner.BrightCyan, banner.Reset)
+	fmt.Println(strings.Repeat("─", 45))
+	fmt.Printf("  会话记录:   %d 次\n", sessions)
+	fmt.Printf("  活跃记忆:   %d 条\n", activeMem)
+	fmt.Printf("  已遗忘:     %d 条\n", expiredMem)
+	fmt.Printf("  存储位置:   %s\n", memMgr.GetMemDir())
+
+	// 列出活跃记忆
+	memories := memMgr.GetAllMemories()
+	if len(memories) > 0 {
+		fmt.Printf("\n%s活跃记忆:%s\n", banner.Dim, banner.Reset)
+		categories := map[string]string{
+			"user_info":   "👤",
+			"preference":  "⚙️",
+			"project":     "📁",
+			"fact":        "📌",
+			"instruction": "📝",
+		}
+		for i, e := range memories {
+			icon := categories[e.Category]
+			if icon == "" {
+				icon = "💡"
+			}
+			content := e.Content
+			if len(content) > 60 {
+				content = content[:60] + "..."
+			}
+			fmt.Printf("  %s %s[%d] %s%s\n", icon, banner.Dim, i+1, banner.Reset, content)
+		}
+	}
+	fmt.Println()
+}
+
+// extractAndSaveMemories 异步从对话中提取长期记忆
+func extractAndSaveMemories(aiMgr *ai.Manager, memMgr *ai.MemoryManager, history []ai.Message) {
+	// 构建提取请求
+	prompt := ai.ExtractMemoryPrompt(history)
+	resp, err := aiMgr.Chat(prompt)
+	if err != nil {
+		return
+	}
+
+	// 解析提取结果
+	extracted := ai.ParseExtractedMemories(resp.Content)
+	for _, item := range extracted {
+		// 构建来源摘要
+		source := ""
+		for _, msg := range history {
+			if msg.Role == ai.RoleUser {
+				if len(msg.Content) > 100 {
+					source = msg.Content[:100] + "..."
+				} else {
+					source = msg.Content
+				}
+			}
+		}
+		memMgr.AddMemory(item.Category, item.Content, source, item.Importance, item.Tags)
+	}
 }
 
 func init() {
@@ -762,12 +1149,158 @@ func init() {
 	aiSkillCmd.AddCommand(aiSkillInstallCmd)
 	aiSkillCmd.AddCommand(aiSkillRemoveCmd)
 
+	aiMemoryCmd.AddCommand(aiMemoryListCmd)
+	aiMemoryCmd.AddCommand(aiMemoryClearCmd)
+	aiMemoryCmd.AddCommand(aiMemorySessionsCmd)
+
 	aiCmd.AddCommand(aiChatCmd)
 	aiCmd.AddCommand(aiListCmd)
 	aiCmd.AddCommand(aiConnectCmd)
 	aiCmd.AddCommand(aiProviderCmd)
 	aiCmd.AddCommand(aiAgentCmd)
 	aiCmd.AddCommand(aiSkillCmd)
+	aiCmd.AddCommand(aiMemoryCmd)
 
 	rootCmd.AddCommand(aiCmd)
+}
+
+// ===== ai memory =====
+
+var aiMemoryCmd = &cobra.Command{
+	Use:   "memory",
+	Short: "AI 记忆管理",
+	Long: `管理 AI 的记忆系统 — 查看、清理长期记忆和会话历史。
+
+记忆数据安全存储在本地: ~/.jiasine/mem/
+  sessions/     会话记录 (短期记忆)
+  long_term.json 长期记忆 (关键事实/偏好)`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		memMgr, err := ai.NewMemoryManager()
+		if err != nil {
+			return err
+		}
+		printMemoryStatus(memMgr)
+		return nil
+	},
+}
+
+var aiMemoryListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "查看所有长期记忆",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		memMgr, err := ai.NewMemoryManager()
+		if err != nil {
+			return err
+		}
+
+		memories := memMgr.GetAllMemories()
+		if len(memories) == 0 {
+			fmt.Printf("%s暂无长期记忆%s\n", banner.Dim, banner.Reset)
+			fmt.Printf("AI 会在对话结束时自动提取有价值的信息存为长期记忆\n")
+			return nil
+		}
+
+		categories := map[string]string{
+			"user_info":   "👤 用户信息",
+			"preference":  "⚙️ 偏好设置",
+			"project":     "📁 项目知识",
+			"fact":        "📌 重要事实",
+			"instruction": "📝 习惯指令",
+		}
+
+		fmt.Printf("\n%s🧠 长期记忆 (%d 条)%s\n", banner.BrightCyan, len(memories), banner.Reset)
+		fmt.Println(strings.Repeat("─", 70))
+
+		for i, e := range memories {
+			catLabel := categories[e.Category]
+			if catLabel == "" {
+				catLabel = "💡 " + e.Category
+			}
+			fmt.Printf("\n  %s[%d]%s %s\n", banner.Dim, i+1, banner.Reset, catLabel)
+			fmt.Printf("  内容: %s\n", e.Content)
+			fmt.Printf("  %s重要性: %d | 访问: %d 次 | 创建: %s%s\n",
+				banner.Dim, e.Importance, e.AccessCount,
+				e.CreatedAt.Format("2006-01-02 15:04"), banner.Reset)
+		}
+		fmt.Println()
+		return nil
+	},
+}
+
+var aiMemoryClearCmd = &cobra.Command{
+	Use:   "clear",
+	Short: "清空所有记忆 (长期 + 会话)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		memMgr, err := ai.NewMemoryManager()
+		if err != nil {
+			return err
+		}
+
+		sessions, activeMem, _ := memMgr.Stats()
+		if sessions == 0 && activeMem == 0 {
+			fmt.Printf("%s记忆已经是空的%s\n", banner.Dim, banner.Reset)
+			return nil
+		}
+
+		fmt.Printf("即将清空: %d 条长期记忆 + %d 个会话记录\n", activeMem, sessions)
+		fmt.Printf("确认清空? (y/N): ")
+		var confirm string
+		fmt.Scanln(&confirm)
+		if strings.ToLower(confirm) != "y" {
+			fmt.Println("已取消")
+			return nil
+		}
+
+		if err := memMgr.ClearAllMemories(); err != nil {
+			return err
+		}
+		fmt.Printf("%s🗑 已清空所有记忆%s\n", banner.BrightGreen, banner.Reset)
+		return nil
+	},
+}
+
+var aiMemorySessionsCmd = &cobra.Command{
+	Use:   "sessions",
+	Short: "查看最近的会话记录",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		memMgr, err := ai.NewMemoryManager()
+		if err != nil {
+			return err
+		}
+
+		sessions := memMgr.ListSessions(10)
+		if len(sessions) == 0 {
+			fmt.Printf("%s暂无会话记录%s\n", banner.Dim, banner.Reset)
+			return nil
+		}
+
+		fmt.Printf("\n%s📋 最近会话记录 (%d 条)%s\n", banner.BrightCyan, len(sessions), banner.Reset)
+		fmt.Println(strings.Repeat("─", 70))
+
+		for i, s := range sessions {
+			agent := s.Agent
+			if agent == "" {
+				agent = "(无)"
+			}
+			fmt.Printf("  %s[%d]%s %s | Agent: %s | %d 轮 | %s · %s\n",
+				banner.Dim, i+1, banner.Reset,
+				s.CreatedAt.Format("2006-01-02 15:04"),
+				agent, s.TurnCount,
+				s.Provider, s.Model,
+			)
+			// 显示第一条用户消息预览
+			for _, msg := range s.Messages {
+				if msg.Role == ai.RoleUser {
+					preview := msg.Content
+					if len(preview) > 50 {
+						preview = preview[:50] + "..."
+					}
+					fmt.Printf("       %s\"%s\"%s\n", banner.Dim, preview, banner.Reset)
+					break
+				}
+			}
+		}
+		fmt.Println()
+		return nil
+	},
 }

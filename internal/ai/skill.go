@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/xiangjianhe-github/jiasinecli/internal/logger"
@@ -127,18 +128,71 @@ func (m *SkillManager) Get(name string) (*Skill, error) {
 	return skill, nil
 }
 
-// Install 安装 Skill（从 JSON 文件或目录）
+// AllNames 返回所有已加载的 Skill 名称
+func (m *SkillManager) AllNames() []string {
+	names := make([]string, 0, len(m.skills))
+	for name := range m.skills {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Install 安装 Skill（从名称、JSON 文件、Markdown 文件或目录）
+// 支持:
+//   - skill 名称 (从 skills 目录查找已加载的 skill)
+//   - JSON 文件路径
+//   - Markdown 文件路径
+//   - 目录路径
 func (m *SkillManager) Install(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("读取 Skill 路径失败: %w", err)
+		// 路径不存在时，尝试按名称从 skills 目录查找
+		if os.IsNotExist(err) && m.skillDir != "" {
+			skillPath := filepath.Join(m.skillDir, path)
+			if si, serr := os.Stat(skillPath); serr == nil && si.IsDir() {
+				return m.installFromDir(skillPath)
+			}
+		}
+		// 检查是否已加载（只是未关联到 agent）
+		if _, ok := m.skills[path]; ok {
+			logger.Info("Skill 已存在，无需重复安装", "name", path)
+			return nil
+		}
+		return fmt.Errorf("Skill '%s' 未找到 (不是有效路径或已安装的 Skill 名称)", path)
 	}
 
-	// 如果是目录，查找 SKILL.md 或 skill.json
+	// 如果是目录，查找 skill.json 或 *.md
 	if info.IsDir() {
 		return m.installFromDir(path)
 	}
 
+	lower := strings.ToLower(path)
+
+	// Markdown 文件安装
+	if strings.HasSuffix(lower, ".md") {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("读取 Skill 文件失败: %w", err)
+		}
+		name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		skill := parseMarkdownSkill(name, string(data))
+
+		// 复制到 skills 目录
+		if m.skillDir != "" {
+			destDir := filepath.Join(m.skillDir, skill.Name)
+			os.MkdirAll(destDir, 0755)
+			destPath := filepath.Join(destDir, filepath.Base(path))
+			if err := os.WriteFile(destPath, data, 0644); err != nil {
+				return fmt.Errorf("安装 Skill 失败: %w", err)
+			}
+		}
+
+		m.skills[skill.Name] = skill
+		logger.Info("Skill 已安装 (从 Markdown)", "name", skill.Name)
+		return nil
+	}
+
+	// JSON 文件安装
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("读取 Skill 文件失败: %w", err)
@@ -168,7 +222,7 @@ func (m *SkillManager) Install(path string) error {
 	return nil
 }
 
-// installFromDir 从目录安装 Skill (支持 SKILL.md 格式)
+// installFromDir 从目录安装 Skill (支持 JSON + 多种 Markdown 格式)
 func (m *SkillManager) installFromDir(dir string) error {
 	name := filepath.Base(dir)
 
@@ -186,40 +240,24 @@ func (m *SkillManager) installFromDir(dir string) error {
 				copyDir(dir, destDir)
 			}
 			m.skills[skill.Name] = &skill
-			logger.Info("Skill 已安装 (从目录)", "name", skill.Name)
+			logger.Info("Skill 已安装 (从目录/JSON)", "name", skill.Name)
 			return nil
 		}
 	}
 
-	// 尝试读取 SKILL.md — 将 Markdown 内容作为 Prompt
-	mdPath := filepath.Join(dir, "SKILL.md")
-	if data, err := os.ReadFile(mdPath); err == nil {
-		skill := &Skill{
-			Name:    name,
-			Prompt:  string(data),
-			Version: "1.0.0",
-			Author:  "local",
-		}
-		// 从第一行提取描述
-		lines := strings.SplitN(string(data), "\n", 3)
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(strings.TrimLeft(line, "#"))
-			if trimmed != "" {
-				skill.Description = trimmed
-				break
-			}
-		}
+	// 尝试加载 Markdown 文件
+	if skill := m.loadMarkdownSkill(dir, name); skill != nil {
 		// 安装到 skills 目录
 		if m.skillDir != "" {
 			destDir := filepath.Join(m.skillDir, name)
 			copyDir(dir, destDir)
 		}
 		m.skills[name] = skill
-		logger.Info("Skill 已安装 (从 SKILL.md)", "name", name)
+		logger.Info("Skill 已安装 (从目录/Markdown)", "name", name)
 		return nil
 	}
 
-	return fmt.Errorf("目录 '%s' 中未找到 skill.json 或 SKILL.md", dir)
+	return fmt.Errorf("目录 '%s' 中未找到 skill.json 或 *.md 文件", dir)
 }
 
 // Remove 卸载 Skill
@@ -253,16 +291,34 @@ func (m *SkillManager) BuildContext(skillNames []string) string {
 		if !ok {
 			continue
 		}
-		part := fmt.Sprintf("### %s\n%s\n\n%s", skill.Name, skill.Description, skill.Prompt)
+		part := fmt.Sprintf("### Skill: %s\n**%s**\n\n%s", skill.Name, skill.Description, skill.Prompt)
 		if len(skill.Examples) > 0 {
-			part += "\n\n示例:\n"
+			part += "\n\n**使用示例:**\n"
 			for _, ex := range skill.Examples {
 				part += "- " + ex + "\n"
 			}
 		}
+		// 附加 MCP 工具/资源定义
+		if skill.MCP != nil {
+			if len(skill.MCP.Tools) > 0 {
+				part += "\n\n**可用工具 (MCP Tools):**\n"
+				for _, tool := range skill.MCP.Tools {
+					part += fmt.Sprintf("- `%s` — %s\n", tool.Name, tool.Description)
+				}
+			}
+			if len(skill.MCP.Resources) > 0 {
+				part += "\n**可用资源 (MCP Resources):**\n"
+				for _, res := range skill.MCP.Resources {
+					part += fmt.Sprintf("- [%s](%s) — %s\n", res.Name, res.URI, res.Description)
+				}
+			}
+		}
 		parts = append(parts, part)
 	}
-	return strings.Join(parts, "\n\n---\n\n")
+	if len(parts) == 0 {
+		return ""
+	}
+	return "## 已加载的 Skills\n\n" + strings.Join(parts, "\n\n---\n\n")
 }
 
 // SkillInfo Skill 展示信息
@@ -550,7 +606,13 @@ func (m *SkillManager) registerBuiltinSkills() {
 	}
 }
 
+// builtinSkillNames 内置 Skill 名称列表
+var builtinSkillNames = map[string]bool{
+	"ask": true, "prompt-analysis": true, "git-ai-search": true,
+}
+
 // ensureDefaults 将内置 Skill 定义写入磁盘（仅当 skill.json 不存在时）
+// 仅写内置 Skills，不影响用户安装的 Markdown Skills
 func (m *SkillManager) ensureDefaults() {
 	if m.skillDir == "" {
 		return
@@ -558,6 +620,10 @@ func (m *SkillManager) ensureDefaults() {
 	os.MkdirAll(m.skillDir, 0755)
 
 	for name, skill := range m.skills {
+		// 仅写入内置 Skills
+		if !builtinSkillNames[name] {
+			continue
+		}
 		dirPath := filepath.Join(m.skillDir, name)
 		jsonPath := filepath.Join(dirPath, "skill.json")
 
@@ -577,10 +643,18 @@ func (m *SkillManager) ensureDefaults() {
 }
 
 // loadFromDir 从目录加载 Skill 文件
-// 支持两种格式：
+// 支持多种格式，兼容 OpenClaw/Claude/OpenCode 规范:
+//
 //  1. <dir>/<name>.json — 单文件 JSON 格式
-//  2. <dir>/<name>/skill.json — 子目录格式
-//  3. <dir>/<name>/SKILL.md — Markdown 格式
+//  2. <dir>/<name>/skill.json — 子目录 JSON 格式
+//  3. <dir>/<name>/SKILL.md — OpenClaw 标准 Markdown (不区分大小写)
+//  4. <dir>/<name>/skill.md — 通用 Markdown 格式
+//  5. <dir>/<name>/skills.md — OpenClaw 分类目录 Markdown
+//  6. <dir>/<name>/CLAUDE.md — Claude 标准格式
+//  7. <dir>/<name>/README.md — README 格式
+//  8. <dir>/<name>/*.md — 其他任意 Markdown 文件 (fallback)
+//
+// Markdown 文件支持 YAML frontmatter 解析元数据 (name, description, version, author, tags)
 func (m *SkillManager) loadFromDir(dir string) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return
@@ -593,10 +667,15 @@ func (m *SkillManager) loadFromDir(dir string) {
 	}
 
 	for _, entry := range entries {
-		// 子目录格式 — 查找 skill.json 或 SKILL.md
+		// 子目录格式
 		if entry.IsDir() {
 			name := entry.Name()
 			subDir := filepath.Join(dir, name)
+
+			// 已加载的跳过（内置优先）
+			if _, exists := m.skills[name]; exists {
+				continue
+			}
 
 			// 优先 skill.json
 			jsonPath := filepath.Join(subDir, "skill.json")
@@ -611,51 +690,242 @@ func (m *SkillManager) loadFromDir(dir string) {
 				}
 			}
 
-			// 其次 SKILL.md
-			mdPath := filepath.Join(subDir, "SKILL.md")
-			if data, err := os.ReadFile(mdPath); err == nil {
-				skill := &Skill{
-					Name:    name,
-					Prompt:  string(data),
-					Version: "1.0.0",
-					Author:  "local",
-				}
-				lines := strings.SplitN(string(data), "\n", 3)
-				for _, line := range lines {
-					trimmed := strings.TrimSpace(strings.TrimLeft(line, "#"))
-					if trimmed != "" {
-						skill.Description = trimmed
-						break
-					}
-				}
+			// 尝试加载 Markdown 文件 (按优先级)
+			if skill := m.loadMarkdownSkill(subDir, name); skill != nil {
 				m.skills[name] = skill
 			}
 			continue
 		}
 
 		// 单文件 JSON 格式
-		if !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
+		if strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			path := filepath.Join(dir, entry.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
 
-		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
+			var skill Skill
+			if err := json.Unmarshal(data, &skill); err != nil {
+				logger.Warn("解析 Skill 文件失败", "path", path, "error", err)
+				continue
+			}
 
-		var skill Skill
-		if err := json.Unmarshal(data, &skill); err != nil {
-			logger.Warn("解析 Skill 文件失败", "path", path, "error", err)
-			continue
+			name := strings.TrimSuffix(entry.Name(), ".json")
+			if skill.Name == "" {
+				skill.Name = name
+			}
+			if _, exists := m.skills[name]; !exists {
+				m.skills[name] = &skill
+			}
 		}
-
-		name := strings.TrimSuffix(entry.Name(), ".json")
-		if skill.Name == "" {
-			skill.Name = name
-		}
-		m.skills[name] = &skill
 	}
+}
+
+// mdFilePriority Markdown 文件优先级（数字越小优先级越高）
+// 兼容多种标准: OpenClaw (SKILL.md), Claude (CLAUDE.md), OpenCode, 通用
+var mdFilePriority = map[string]int{
+	"skill.md":  1, // OpenClaw 标准 (含大写 SKILL.md — 比较时会转小写)
+	"claude.md": 2, // Claude 标准
+	"skills.md": 3, // OpenClaw 分类目录
+	"readme.md": 4, // 通用 README
+}
+
+// loadMarkdownSkill 从子目录加载 Markdown 格式的 Skill
+// 支持 YAML frontmatter 元数据解析
+func (m *SkillManager) loadMarkdownSkill(subDir, name string) *Skill {
+	// 扫描目录中的 .md 文件
+	entries, err := os.ReadDir(subDir)
+	if err != nil {
+		return nil
+	}
+
+	type mdCandidate struct {
+		path     string
+		priority int
+	}
+
+	var candidates []mdCandidate
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		lower := strings.ToLower(e.Name())
+		if !strings.HasSuffix(lower, ".md") {
+			continue
+		}
+		prio, ok := mdFilePriority[lower]
+		if !ok {
+			prio = 99 // 其他 .md 文件 fallback
+		}
+		candidates = append(candidates, mdCandidate{
+			path:     filepath.Join(subDir, e.Name()),
+			priority: prio,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// 按优先级排序，选最高优先级
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.priority < best.priority {
+			best = c
+		}
+	}
+
+	data, err := os.ReadFile(best.path)
+	if err != nil {
+		return nil
+	}
+
+	return parseMarkdownSkill(name, string(data))
+}
+
+// YAML frontmatter 正则
+var frontmatterRegex = regexp.MustCompile(`(?s)\A---\n(.+?)\n---\n?(.*)`)
+
+// parseMarkdownSkill 解析 Markdown 文件为 Skill 对象
+// 支持 YAML frontmatter (OpenClaw/Claude/OpenCode 兼容)
+//
+// 支持的 frontmatter 字段:
+//
+//	name, description, version, author, tags (逗号分隔)
+//
+// 无 frontmatter 时，从 Markdown 内容自动提取描述
+func parseMarkdownSkill(dirName, content string) *Skill {
+	// 去除 UTF-8 BOM (Windows PowerShell 等工具默认写入 BOM)
+	content = strings.TrimPrefix(content, "\xef\xbb\xbf")
+	content = strings.TrimPrefix(content, "\ufeff")
+
+	skill := &Skill{
+		Name:    dirName,
+		Version: "1.0.0",
+		Author:  "community",
+	}
+
+	body := content
+
+	// 解析 YAML frontmatter (--- ... ---)
+	if m := frontmatterRegex.FindStringSubmatch(content); len(m) == 3 {
+		parseFrontmatter(m[1], skill)
+		body = m[2]
+	}
+
+	// Prompt = 去掉 frontmatter 后的正文
+	skill.Prompt = strings.TrimSpace(body)
+
+	// 如果 frontmatter 没有 description，从正文提取
+	if skill.Description == "" {
+		skill.Description = extractDescription(body)
+	}
+
+	// 如果 frontmatter 没有 name，用目录名
+	if skill.Name == "" {
+		skill.Name = dirName
+	}
+
+	// 检测是否为 OpenClaw 分类目录格式 (含 "** N skills**" 标记)
+	if strings.Contains(body, " skills**") || strings.Contains(body, " skills\n") {
+		// 按目录名自动设置标签
+		if len(skill.Tags) == 0 {
+			skill.Tags = []string{"catalog", dirName}
+		}
+	}
+
+	return skill
+}
+
+// parseFrontmatter 解析 YAML frontmatter 中的字段
+// 简单解析，不依赖完整 YAML 库（兼容多格式）
+func parseFrontmatter(fm string, skill *Skill) {
+	lines := strings.Split(fm, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.Index(line, ":")
+		if idx <= 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		// 去除 YAML 字符串引号
+		val = strings.Trim(val, "\"'")
+
+		switch strings.ToLower(key) {
+		case "name", "id":
+			if val != "" {
+				skill.Name = val
+			}
+		case "description", "desc", "summary":
+			if val != "" {
+				skill.Description = val
+			}
+		case "version":
+			if val != "" {
+				skill.Version = val
+			}
+		case "author":
+			if val != "" {
+				skill.Author = val
+			}
+		case "tags", "categories":
+			if val != "" {
+				tags := strings.Split(val, ",")
+				for _, t := range tags {
+					t = strings.TrimSpace(t)
+					if t != "" {
+						skill.Tags = append(skill.Tags, t)
+					}
+				}
+			}
+		case "displayname", "display_name", "title":
+			// 某些格式用 displayName 作为描述
+			if val != "" && skill.Description == "" {
+				skill.Description = val
+			}
+		}
+	}
+}
+
+// extractDescription 从 Markdown 内容提取描述
+// 优先使用第一个 H1 标题，其次使用第一段非空文本
+func extractDescription(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// 跳过链接行 (如 "[← Back to main list](...)")
+		if strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "](") {
+			continue
+		}
+		// 跳过 "**N skills**" 统计行
+		if strings.HasPrefix(trimmed, "**") && strings.Contains(trimmed, "skills**") {
+			continue
+		}
+		// H1 标题 → 描述
+		if strings.HasPrefix(trimmed, "# ") {
+			desc := strings.TrimPrefix(trimmed, "# ")
+			desc = strings.TrimSpace(desc)
+			if desc != "" {
+				return desc
+			}
+			continue
+		}
+		// 普通文本行
+		desc := strings.TrimLeft(trimmed, "#- ")
+		if len(desc) > 120 {
+			desc = desc[:120] + "..."
+		}
+		return desc
+	}
+	return ""
 }
 
 // copyDir 递归复制目录

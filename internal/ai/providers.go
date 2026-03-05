@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -126,16 +127,58 @@ func (p *openaiProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 }
 
 func (p *openaiProvider) ChatStream(req *ChatRequest) (<-chan StreamChunk, error) {
-	// 流式暂用非流式替代
-	ch := make(chan StreamChunk, 1)
+	model := req.Model
+	if model == "" {
+		model = p.DefaultModel()
+	}
+
+	body := map[string]interface{}{
+		"model":    model,
+		"messages": req.Messages,
+		"stream":   true,
+	}
+	if req.Temperature > 0 {
+		body["temperature"] = req.Temperature
+	}
+	if req.MaxTokens > 0 {
+		body["max_tokens"] = req.MaxTokens
+	}
+	if req.WebSearch {
+		body["tools"] = []map[string]interface{}{
+			{"type": "web_search_preview"},
+		}
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", p.cfg.BaseURL+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+
+	// 流式请求不设超时，用不带 timeout 的 client
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("请求 OpenAI 失败: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("OpenAI API 返回 %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan StreamChunk, 64)
 	go func() {
 		defer close(ch)
-		resp, err := p.Chat(req)
-		if err != nil {
-			ch <- StreamChunk{Error: err, Done: true}
-			return
-		}
-		ch <- StreamChunk{Content: resp.Content, Done: true}
+		defer resp.Body.Close()
+		parseOpenAISSE(resp.Body, "OpenAI", model, ch)
 	}()
 	return ch, nil
 }
@@ -202,12 +245,30 @@ func (p *claudeProvider) chatNative(req *ChatRequest) (*ChatResponse, error) {
 
 	// Claude API: system 在顶层，messages 只有 user/assistant
 	var system string
-	var messages []map[string]string
+	var messages []interface{}
 	for _, m := range req.Messages {
 		if m.Role == RoleSystem {
 			system = m.Content
+		} else if m.Role == RoleToolResult {
+			// 工具返回结果 — 作为 user 角色发送
+			var toolResults []map[string]interface{}
+			if err := json.Unmarshal([]byte(m.Content), &toolResults); err == nil {
+				messages = append(messages, map[string]interface{}{
+					"role":    "user",
+					"content": toolResults,
+				})
+			}
+		} else if m.Role == RoleAssistantToolUse {
+			// 助手的工具调用内容块 — 原样传回
+			var contentBlocks []interface{}
+			if err := json.Unmarshal([]byte(m.Content), &contentBlocks); err == nil {
+				messages = append(messages, map[string]interface{}{
+					"role":    "assistant",
+					"content": contentBlocks,
+				})
+			}
 		} else {
-			messages = append(messages, map[string]string{
+			messages = append(messages, map[string]interface{}{
 				"role":    string(m.Role),
 				"content": m.Content,
 			})
@@ -228,14 +289,20 @@ func (p *claudeProvider) chatNative(req *ChatRequest) (*ChatResponse, error) {
 	if req.Temperature > 0 {
 		body["temperature"] = req.Temperature
 	}
-	// Claude: 启用联网搜索 (web_search tool)
+
+	// 合并工具定义: MCP tools + web_search
+	var allTools []map[string]interface{}
+	if len(req.Tools) > 0 {
+		allTools = append(allTools, req.Tools...)
+	}
 	if req.WebSearch {
-		body["tools"] = []map[string]interface{}{
-			{
-				"type": "web_search_20250305",
-				"name": "web_search",
-			},
-		}
+		allTools = append(allTools, map[string]interface{}{
+			"type": "web_search_20250305",
+			"name": "web_search",
+		})
+	}
+	if len(allTools) > 0 {
+		body["tools"] = allTools
 	}
 
 	data, err := json.Marshal(body)
@@ -281,41 +348,153 @@ func (p *claudeProvider) chatNative(req *ChatRequest) (*ChatResponse, error) {
 	}
 
 	content := ""
+	var toolCalls []ToolCall
 	for _, block := range result.Content {
-		if block.Type == "text" {
+		switch block.Type {
+		case "text":
 			content += block.Text
+		case "tool_use":
+			toolCalls = append(toolCalls, ToolCall{
+				ID:    block.ID,
+				Name:  block.Name,
+				Input: block.Input,
+			})
 		}
 	}
 
-	return &ChatResponse{
+	chatResp := &ChatResponse{
 		Content:      content,
 		Model:        result.Model,
 		Provider:     "Claude",
 		PromptTokens: result.Usage.InputTokens,
 		OutputTokens: result.Usage.OutputTokens,
 		TotalTokens:  result.Usage.InputTokens + result.Usage.OutputTokens,
-	}, nil
+		ToolCalls:    toolCalls,
+		StopReason:   result.StopReason,
+	}
+
+	return chatResp, nil
 }
 
 func (p *claudeProvider) ChatStream(req *ChatRequest) (<-chan StreamChunk, error) {
-	ch := make(chan StreamChunk, 1)
+	model := req.Model
+	if model == "" {
+		model = p.DefaultModel()
+	}
+
+	// 构建请求体 (与 chatNative 相同，但加 stream: true)
+	var system string
+	var messages []interface{}
+	for _, m := range req.Messages {
+		if m.Role == RoleSystem {
+			system = m.Content
+		} else if m.Role == RoleToolResult {
+			var toolResults []map[string]interface{}
+			if err := json.Unmarshal([]byte(m.Content), &toolResults); err == nil {
+				messages = append(messages, map[string]interface{}{
+					"role":    "user",
+					"content": toolResults,
+				})
+			}
+		} else if m.Role == RoleAssistantToolUse {
+			var contentBlocks []interface{}
+			if err := json.Unmarshal([]byte(m.Content), &contentBlocks); err == nil {
+				messages = append(messages, map[string]interface{}{
+					"role":    "assistant",
+					"content": contentBlocks,
+				})
+			}
+		} else {
+			messages = append(messages, map[string]interface{}{
+				"role":    string(m.Role),
+				"content": m.Content,
+			})
+		}
+	}
+
+	body := map[string]interface{}{
+		"model":      model,
+		"messages":   messages,
+		"max_tokens": 4096,
+		"stream":     true,
+	}
+	if system != "" {
+		body["system"] = system
+	}
+	if req.MaxTokens > 0 {
+		body["max_tokens"] = req.MaxTokens
+	}
+	if req.Temperature > 0 {
+		body["temperature"] = req.Temperature
+	}
+
+	// 合并工具定义
+	var allTools []map[string]interface{}
+	if len(req.Tools) > 0 {
+		allTools = append(allTools, req.Tools...)
+	}
+	if req.WebSearch {
+		allTools = append(allTools, map[string]interface{}{
+			"type": "web_search_20250305",
+			"name": "web_search",
+		})
+	}
+	if len(allTools) > 0 {
+		body["tools"] = allTools
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	apiURL := strings.TrimRight(p.cfg.BaseURL, "/")
+	if strings.HasSuffix(apiURL, "/messages") {
+		// 已包含完整路径
+	} else if strings.HasSuffix(apiURL, "/v1") {
+		apiURL += "/messages"
+	} else {
+		apiURL += "/v1/messages"
+	}
+
+	httpReq, err := http.NewRequest("POST", apiURL, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", p.cfg.APIKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("请求 Claude 失败: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("Claude API 返回 %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan StreamChunk, 64)
 	go func() {
 		defer close(ch)
-		resp, err := p.Chat(req)
-		if err != nil {
-			ch <- StreamChunk{Error: err, Done: true}
-			return
-		}
-		ch <- StreamChunk{Content: resp.Content, Done: true}
+		defer resp.Body.Close()
+		parseClaudeSSE(resp.Body, model, ch)
 	}()
 	return ch, nil
 }
 
 type claudeChatResponse struct {
-	Model   string `json:"model"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+	Model      string `json:"model"`
+	StopReason string `json:"stop_reason"`
+	Content    []struct {
+		Type  string                 `json:"type"`
+		Text  string                 `json:"text,omitempty"`
+		ID    string                 `json:"id,omitempty"`
+		Name  string                 `json:"name,omitempty"`
+		Input map[string]interface{} `json:"input,omitempty"`
 	} `json:"content"`
 	Usage struct {
 		InputTokens  int `json:"input_tokens"`
@@ -430,15 +609,25 @@ func (p *geminiProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 }
 
 func (p *geminiProvider) ChatStream(req *ChatRequest) (<-chan StreamChunk, error) {
+	// Gemini SSE 格式不同，暂用非流式模拟
 	ch := make(chan StreamChunk, 1)
 	go func() {
 		defer close(ch)
 		resp, err := p.Chat(req)
 		if err != nil {
-			ch <- StreamChunk{Error: err, Done: true}
+			ch <- StreamChunk{Type: "error", Error: err, Done: true}
 			return
 		}
-		ch <- StreamChunk{Content: resp.Content, Done: true}
+		ch <- StreamChunk{Type: "content", Content: resp.Content, Model: resp.Model, Provider: resp.Provider}
+		ch <- StreamChunk{
+			Type: "usage", Done: true,
+			Model: resp.Model, Provider: resp.Provider,
+			Usage: &TokenUsage{
+				PromptTokens: resp.PromptTokens,
+				OutputTokens: resp.OutputTokens,
+				TotalTokens:  resp.TotalTokens,
+			},
+		}
 	}()
 	return ch, nil
 }
@@ -557,15 +746,55 @@ func (p *qwenProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 }
 
 func (p *qwenProvider) ChatStream(req *ChatRequest) (<-chan StreamChunk, error) {
-	ch := make(chan StreamChunk, 1)
+	model := req.Model
+	if model == "" {
+		model = p.DefaultModel()
+	}
+
+	body := map[string]interface{}{
+		"model":    model,
+		"messages": req.Messages,
+		"stream":   true,
+	}
+	if req.Temperature > 0 {
+		body["temperature"] = req.Temperature
+	}
+	if req.MaxTokens > 0 {
+		body["max_tokens"] = req.MaxTokens
+	}
+	if req.WebSearch {
+		body["enable_search"] = true
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", p.cfg.BaseURL+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("请求 Qwen 失败: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("Qwen API 返回 %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan StreamChunk, 64)
 	go func() {
 		defer close(ch)
-		resp, err := p.Chat(req)
-		if err != nil {
-			ch <- StreamChunk{Error: err, Done: true}
-			return
-		}
-		ch <- StreamChunk{Content: resp.Content, Done: true}
+		defer resp.Body.Close()
+		parseOpenAISSE(resp.Body, "Qwen", model, ch)
 	}()
 	return ch, nil
 }
@@ -670,15 +899,301 @@ func (p *deepSeekProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 }
 
 func (p *deepSeekProvider) ChatStream(req *ChatRequest) (<-chan StreamChunk, error) {
-	ch := make(chan StreamChunk, 1)
+	model := req.Model
+	if model == "" {
+		model = p.DefaultModel()
+	}
+
+	body := map[string]interface{}{
+		"model":    model,
+		"messages": req.Messages,
+		"stream":   true,
+	}
+	if req.Temperature > 0 {
+		body["temperature"] = req.Temperature
+	}
+	if req.MaxTokens > 0 {
+		body["max_tokens"] = req.MaxTokens
+	}
+	if req.WebSearch {
+		body["tools"] = []map[string]interface{}{
+			{"type": "web_search"},
+		}
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", p.cfg.BaseURL+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
+
+	streamClient := &http.Client{}
+	resp, err := streamClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("请求 DeepSeek 失败: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("DeepSeek API 返回 %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	ch := make(chan StreamChunk, 64)
 	go func() {
 		defer close(ch)
-		resp, err := p.Chat(req)
-		if err != nil {
-			ch <- StreamChunk{Error: err, Done: true}
-			return
-		}
-		ch <- StreamChunk{Content: resp.Content, Done: true}
+		defer resp.Body.Close()
+		parseOpenAISSE(resp.Body, "DeepSeek", model, ch)
 	}()
 	return ch, nil
+}
+
+// ============================================================
+// SSE 解析器
+// ============================================================
+
+// parseOpenAISSE 解析 OpenAI 兼容格式的 SSE 流 (OpenAI/DeepSeek/Qwen)
+// DeepSeek R1 模型额外支持 reasoning_content 字段
+func parseOpenAISSE(body io.Reader, provider, model string, ch chan<- StreamChunk) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	var usage *TokenUsage
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// SSE 格式: "data: {...}" 或 "data: [DONE]"
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		// 解析 JSON chunk
+		var chunk struct {
+			Model   string `json:"model"`
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"` // DeepSeek R1
+					Role             string `json:"role"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+				TotalTokens      int `json:"total_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
+
+		// 提取 usage (通常在最后一个 chunk)
+		if chunk.Usage != nil {
+			usage = &TokenUsage{
+				PromptTokens: chunk.Usage.PromptTokens,
+				OutputTokens: chunk.Usage.CompletionTokens,
+				TotalTokens:  chunk.Usage.TotalTokens,
+			}
+		}
+
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		delta := chunk.Choices[0].Delta
+
+		// DeepSeek R1: 思考/推理内容
+		if delta.ReasoningContent != "" {
+			ch <- StreamChunk{
+				Type:     "thinking",
+				Thinking: delta.ReasoningContent,
+				Model:    model,
+				Provider: provider,
+			}
+		}
+
+		// 正文内容
+		if delta.Content != "" {
+			ch <- StreamChunk{
+				Type:     "content",
+				Content:  delta.Content,
+				Model:    model,
+				Provider: provider,
+			}
+		}
+	}
+
+	// 发送最终的 done 信号
+	ch <- StreamChunk{
+		Type:     "usage",
+		Done:     true,
+		Model:    model,
+		Provider: provider,
+		Usage:    usage,
+	}
+}
+
+// parseClaudeSSE 解析 Claude (Anthropic) SSE 流
+// 支持 thinking (扩展思考) 、text、tool_use 三种内容块
+func parseClaudeSSE(body io.Reader, model string, ch chan<- StreamChunk) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	var stopReason string
+	var inputTokens, outputTokens int
+
+	// 跟踪当前内容块类型和工具调用
+	type blockInfo struct {
+		blockType string // "thinking", "text", "tool_use"
+		toolID    string
+		toolName  string
+		inputJSON strings.Builder
+	}
+	blocks := map[int]*blockInfo{}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+
+		// 解析事件
+		var event struct {
+			Type    string `json:"type"`
+			Message *struct {
+				Model string `json:"model"`
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message,omitempty"`
+			Index        int `json:"index"`
+			ContentBlock *struct {
+				Type string `json:"type"` // "thinking", "text", "tool_use"
+				ID   string `json:"id,omitempty"`
+				Name string `json:"name,omitempty"`
+			} `json:"content_block,omitempty"`
+			Delta *struct {
+				Type             string `json:"type"` // "thinking_delta", "text_delta", "input_json_delta"
+				Thinking         string `json:"thinking,omitempty"`
+				Text             string `json:"text,omitempty"`
+				PartialJSON      string `json:"partial_json,omitempty"`
+				StopReason       string `json:"stop_reason,omitempty"`
+			} `json:"delta,omitempty"`
+			Usage *struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage,omitempty"`
+		}
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case "message_start":
+			if event.Message != nil {
+				if event.Message.Model != "" {
+					model = event.Message.Model
+				}
+				inputTokens = event.Message.Usage.InputTokens
+			}
+
+		case "content_block_start":
+			if event.ContentBlock != nil {
+				blocks[event.Index] = &blockInfo{
+					blockType: event.ContentBlock.Type,
+					toolID:    event.ContentBlock.ID,
+					toolName:  event.ContentBlock.Name,
+				}
+			}
+
+		case "content_block_delta":
+			if event.Delta == nil {
+				continue
+			}
+			switch event.Delta.Type {
+			case "thinking_delta":
+				if event.Delta.Thinking != "" {
+					ch <- StreamChunk{
+						Type:     "thinking",
+						Thinking: event.Delta.Thinking,
+						Model:    model,
+						Provider: "Claude",
+					}
+				}
+			case "text_delta":
+				if event.Delta.Text != "" {
+					ch <- StreamChunk{
+						Type:     "content",
+						Content:  event.Delta.Text,
+						Model:    model,
+						Provider: "Claude",
+					}
+				}
+			case "input_json_delta":
+				// 工具调用的 JSON 输入持续拼接
+				if bi, ok := blocks[event.Index]; ok {
+					bi.inputJSON.WriteString(event.Delta.PartialJSON)
+				}
+			}
+
+		case "content_block_stop":
+			if bi, ok := blocks[event.Index]; ok && bi.blockType == "tool_use" {
+				// 工具调用完成，解析输入 JSON
+				var input map[string]interface{}
+				_ = json.Unmarshal([]byte(bi.inputJSON.String()), &input)
+				ch <- StreamChunk{
+					Type:     "tool_use",
+					Model:    model,
+					Provider: "Claude",
+					ToolCalls: []ToolCall{{
+						ID:    bi.toolID,
+						Name:  bi.toolName,
+						Input: input,
+					}},
+				}
+			}
+
+		case "message_delta":
+			if event.Delta != nil && event.Delta.StopReason != "" {
+				stopReason = event.Delta.StopReason
+			}
+			if event.Usage != nil {
+				outputTokens = event.Usage.OutputTokens
+			}
+
+		case "message_stop":
+			// 流结束
+		}
+	}
+
+	// 发送 done 信号
+	ch <- StreamChunk{
+		Type:       "usage",
+		Done:       true,
+		Model:      model,
+		Provider:   "Claude",
+		StopReason: stopReason,
+		Usage: &TokenUsage{
+			PromptTokens: inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+	}
 }

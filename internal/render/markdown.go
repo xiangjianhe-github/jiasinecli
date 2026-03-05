@@ -61,17 +61,24 @@ func renderCodeBlock(lang, code string) string {
 
 	var sb strings.Builder
 
-	// 代码块顶部边框 + 语言标记
 	langLabel := lang
 	if langLabel == "" {
 		langLabel = "code"
 	}
-	sb.WriteString(fmt.Sprintf("\033[2m╭─── %s ","─"+"──────────────────────────────────────────╮\033[0m\n"))
 
-	// 简化：只用语言标签行
-	sb.WriteString(fmt.Sprintf("\033[2m┌─── \033[0m\033[96m%s\033[0m\033[2m ───────────────────────────────────────┐\033[0m\n", langLabel))
+	// 固定框宽度: 49 个可见字符 (含左右边框字符)
+	const boxWidth = 49
 
-	// 语法高亮代码
+	// 顶部: ┌─── lang ─────...┐
+	// "┌─── " = 5 chars, " " after lang = 1, "┐" = 1
+	padLen := boxWidth - 5 - len(langLabel) - 1 - 1
+	if padLen < 3 {
+		padLen = 3
+	}
+	sb.WriteString(fmt.Sprintf("\033[2m┌─── \033[0m\033[96m%s\033[0m\033[2m %s┐\033[0m\n",
+		langLabel, strings.Repeat("─", padLen)))
+
+	// 语法高亮代码行: │ NNN code
 	highlighted := HighlightCode(lang, code)
 	codeLines := strings.Split(highlighted, "\n")
 	for i, cl := range codeLines {
@@ -80,16 +87,9 @@ func renderCodeBlock(lang, code string) string {
 			lineNum, ansiBgCode, cl, ansiReset+ansiBgReset))
 	}
 
-	// 底部边框
-	sb.WriteString("\033[2m└───────────────────────────────────────────────┘\033[0m")
+	// 底部: └─────...─────┘  (宽度与顶部一致)
+	sb.WriteString(fmt.Sprintf("\033[2m└%s┘\033[0m", strings.Repeat("─", boxWidth-2)))
 
-	// 去掉多余的第一行（我写了两个顶部）
-	// 修正：只保留一个顶部
-	lines := strings.Split(sb.String(), "\n")
-	if len(lines) > 1 {
-		// 去掉第一行（多余的顶部）
-		return strings.Join(lines[1:], "\n")
-	}
 	return sb.String()
 }
 
