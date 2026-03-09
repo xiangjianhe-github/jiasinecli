@@ -7,6 +7,7 @@ import (
 	"github.com/xiangjianhe-github/jiasinecli/internal/banner"
 	"github.com/xiangjianhe-github/jiasinecli/internal/config"
 	"github.com/xiangjianhe-github/jiasinecli/internal/logger"
+	"github.com/xiangjianhe-github/jiasinecli/internal/theme"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -87,6 +88,10 @@ func initializeApp() error {
 	if err := config.Init(cfgFile); err != nil {
 		return fmt.Errorf("初始化配置失败: %w", err)
 	}
+
+	// 从配置加载主题
+	theme.Set(theme.ThemeName(config.GetTheme()))
+	banner.RefreshColors()
 
 	// 初始化日志
 	if err := logger.Init(verbose); err != nil {

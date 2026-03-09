@@ -848,12 +848,7 @@ func (p *deepSeekProvider) Chat(req *ChatRequest) (*ChatResponse, error) {
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
 	}
-	// DeepSeek: 启用联网搜索
-	if req.WebSearch {
-		body["tools"] = []map[string]interface{}{
-			{"type": "web_search"},
-		}
-	}
+	// DeepSeek 不支持 web_search 工具类型，跳过联网搜索
 
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -915,11 +910,7 @@ func (p *deepSeekProvider) ChatStream(req *ChatRequest) (<-chan StreamChunk, err
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
 	}
-	if req.WebSearch {
-		body["tools"] = []map[string]interface{}{
-			{"type": "web_search"},
-		}
-	}
+	// DeepSeek 不支持 web_search 工具类型，跳过联网搜索
 
 	data, err := json.Marshal(body)
 	if err != nil {

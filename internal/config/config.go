@@ -24,6 +24,8 @@ type AppConfig struct {
 	Plugins PluginConfig `yaml:"plugins" mapstructure:"plugins"`
 	// AI 配置
 	AI AIConfig `yaml:"ai" mapstructure:"ai"`
+	// 主题配置
+	Theme string `yaml:"theme" mapstructure:"theme"`
 }
 
 // LogConfig 日志配置
@@ -155,6 +157,27 @@ func SetWebSearch(enabled bool) error {
 		cfg.AI.WebSearch = enabled
 	}
 	return nil
+}
+
+// SetTheme 切换主题并持久化到配置文件
+func SetTheme(name string) error {
+	viper.Set("theme", name)
+	if err := viper.WriteConfig(); err != nil {
+		return fmt.Errorf("写入配置文件失败: %w", err)
+	}
+	if cfg != nil {
+		cfg.Theme = name
+	}
+	return nil
+}
+
+// GetTheme 获取当前主题名称
+func GetTheme() string {
+	c := Get()
+	if c.Theme == "" {
+		return "auto"
+	}
+	return c.Theme
 }
 
 // EnsureAIConfig 检查配置文件是否存在并包含 AI 配置
@@ -295,4 +318,7 @@ func setDefaults() {
 	viper.SetDefault("ai.active", "")
 	viper.SetDefault("ai.agents.dir", filepath.Join(home, ".jiasine", "agents"))
 	viper.SetDefault("ai.skills.dir", filepath.Join(home, ".jiasine", "skills"))
+
+	// 主题默认值
+	viper.SetDefault("theme", "auto")
 }

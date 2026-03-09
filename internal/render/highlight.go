@@ -8,19 +8,20 @@ import (
 
 // ANSI 色彩常量（语法高亮专用）
 const (
-	ansiReset   = "\033[0m"
+	// 基础重置：恢复默认前景色 + 强制黑色背景 (修复 PowerShell 蓝色背景问题)
+	ansiReset   = "\033[0m\033[40m\033[97m" // 重置 + 黑色背景 + 亮白前景
 	ansiBold    = "\033[1m"
 	ansiDim     = "\033[2m"
 	ansiItalic  = "\033[3m"
-	ansiComment = "\033[32m"    // 注释: 绿色
-	ansiKeyword = "\033[35m"    // 关键字: 紫色
-	ansiString  = "\033[91m"    // 字符串: 亮红/橙
-	ansiNumber  = "\033[96m"    // 数字: 亮青(浅蓝)
-	ansiType    = "\033[94m"    // 类型: 亮蓝
-	ansiFunc    = "\033[93m"    // 函数名: 亮黄
-	ansiOp      = "\033[97m"    // 操作符: 白色
-	ansiBgCode  = "\033[48;5;236m" // 代码背景: 深灰
-	ansiBgReset = "\033[49m"
+	ansiComment = "\033[38;5;114m"  // 注释: 柔和绿色
+	ansiKeyword = "\033[38;5;176m"  // 关键字: 紫色
+	ansiString  = "\033[38;5;215m"  // 字符串: 浅橙色
+	ansiNumber  = "\033[38;5;117m"  // 数字: 亮青色
+	ansiType    = "\033[38;5;111m"  // 类型: 亮蓝色
+	ansiFunc    = "\033[38;5;228m"  // 函数名: 亮黄色
+	ansiOp      = "\033[38;5;250m"  // 操作符: 浅灰色
+	ansiBgCode  = "\033[48;5;235m"  // 代码背景: 深灰 (更暗，避免干扰)
+	ansiBgReset = "\033[49m\033[40m" // 背景重置 + 强制黑色背景
 )
 
 // langDef 语言定义

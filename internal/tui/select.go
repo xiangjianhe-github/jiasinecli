@@ -88,12 +88,22 @@ func Select(prompt string, options []SelectOption, defaultIdx int) (int, error) 
 			writeln(fmt.Sprintf("\r%s已取消%s", dim, reset))
 			return -1, fmt.Errorf("已取消")
 
-		case n == 1 && buf[0] == 27: // 可能是 Esc 或 ANSI 转义序列的开始
-			// 尝试读取更多字节（非阻塞检查）
+		case n == 1 && buf[0] == 27: // ESC 或 ANSI 转义序列的开始
+			// 读取后续字节判断是纯 ESC 还是方向键序列
 			extra := make([]byte, 2)
-			os.Stdin.Read(extra)
-			if extra[0] == '[' {
-				switch extra[1] {
+			en, _ := os.Stdin.Read(extra)
+			if en >= 1 && extra[0] == '[' {
+				var arrow byte
+				if en >= 2 {
+					arrow = extra[1]
+				} else {
+					// '[' 到达但方向字符还没到，再读一字节
+					ab := make([]byte, 1)
+					if an, _ := os.Stdin.Read(ab); an == 1 {
+						arrow = ab[0]
+					}
+				}
+				switch arrow {
 				case 'A': // Up
 					if selected > 0 {
 						selected--
@@ -103,8 +113,8 @@ func Select(prompt string, options []SelectOption, defaultIdx int) (int, error) 
 						selected++
 					}
 				}
-			} else if extra[0] == 0 {
-				// 纯 Esc 键
+			} else {
+				// 纯 Esc 键（或无法识别的序列）
 				clearLines(len(options))
 				writeln(fmt.Sprintf("\r%s已取消%s", dim, reset))
 				return -1, fmt.Errorf("已取消")

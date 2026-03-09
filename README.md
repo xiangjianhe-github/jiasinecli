@@ -111,11 +111,9 @@ jiasinecli plugin install my-tool
 ## 快速开始
 
 ```bash
-# 构建 (Windows)
-.\build.ps1 -Target dev
-
-# 构建 (Linux/macOS)
-make dev
+# 构建 (所有平台统一使用 Python 脚本)
+python build.py          # 本地构建
+python build.py cross    # 跨平台全量编译
 
 # 查看帮助
 jiasinecli --help
@@ -126,6 +124,69 @@ jiasinecli version
 # 运行集成测试 (需要 gcc/rust/python/dotnet/node 等)
 jiasinecli test --lang all
 ```
+
+## 安装到其他电脑
+
+### Windows
+
+**方法一：一键安装（推荐）**
+
+1. 将 `jiasinecli-windows.exe` 复制到目标电脑任意位置
+2. 双击运行（自动以管理员权限打开 PowerShell）
+3. 在打开的 PowerShell 中执行：
+   ```powershell
+   jiasinecli-windows.exe setup
+   ```
+4. 重新打开一个 PowerShell 窗口，即可直接使用：
+   ```powershell
+   jiasinecli          # 启动 AI 模式
+   jiasine             # 同上（别名）
+   ```
+
+`setup` 命令会自动完成：
+- 复制程序到 `%USERPROFILE%\.jiasine\bin\jiasinecli.exe`
+- 将该目录添加到用户 PATH（通过注册表，永久生效）
+- 创建 `jiasine.cmd` 别名
+
+**方法二：手动安装**
+
+1. 将 `jiasinecli-windows.exe` 重命名为 `jiasinecli.exe`
+2. 放到一个固定目录，例如 `C:\Tools\`
+3. 将该目录添加到系统 PATH：
+   ```powershell
+   [Environment]::SetEnvironmentVariable('PATH', $env:PATH + ';C:\Tools', 'User')
+   ```
+4. 重新打开 PowerShell 即可使用 `jiasinecli`
+
+### macOS
+
+```bash
+# Apple Silicon (M1/M2/M3/M4)
+chmod +x jiasinecli-macos-arm
+sudo cp jiasinecli-macos-arm /usr/local/bin/jiasinecli
+
+# Intel Mac
+chmod +x jiasinecli-macos-intel
+sudo cp jiasinecli-macos-intel /usr/local/bin/jiasinecli
+```
+
+### Linux
+
+```bash
+# x64
+chmod +x jiasinecli-linux
+sudo cp jiasinecli-linux /usr/local/bin/jiasinecli
+
+# ARM64 (如 AWS Graviton)
+chmod +x jiasinecli-linux-arm64
+sudo cp jiasinecli-linux-arm64 /usr/local/bin/jiasinecli
+
+# Raspberry Pi
+chmod +x jiasinecli-raspi
+sudo cp jiasinecli-raspi /usr/local/bin/jiasinecli
+```
+
+安装后所有平台均可直接运行 `jiasinecli`。
 
 ## 命令一览
 
@@ -354,27 +415,25 @@ jiasinecli ai skill remove my-skill
 
 支持 **7 个目标平台**，CGO_ENABLED=0 纯静态编译，单文件无依赖分发：
 
-```powershell
-# PowerShell - 编译所有平台
-.\build.ps1 -Target cross
-
-# PowerShell - 仅编译指定平台
-.\build.ps1 -Target windows
-.\build.ps1 -Target linux
-.\build.ps1 -Target darwin
-.\build.ps1 -Target raspi
-```
+### 统一使用 Python 构建脚本
 
 ```bash
-# Make - 编译所有平台
-make cross
+# 本地构建（自动识别当前平台）
+python build.py
+python build.py local
 
-# Make - 仅编译指定平台
-make cross-windows
-make cross-linux
-make cross-darwin
-make cross-raspi
+# 跨平台全量编译（编译所有 7 个平台）
+python build.py cross
+
+# 清理构建产物
+python build.py clean
 ```
+
+**为什么使用 Python 脚本？**
+- ✅ 跨平台支持：Windows / Linux / macOS 统一使用
+- ✅ 无需额外工具：只需 Python 3.6+ 和 Go
+- ✅ 彩色输出：编译进度和结果清晰可见
+- ✅ 自动统计：文件大小、编译成功率
 
 编译产物在 `dist/` 目录：
 
@@ -439,8 +498,7 @@ JiasineCli/
 │   ├── swift/                       # Swift 编译/HTTP/进程 测试
 │   └── objc/                        # Objective-C 共享库测试
 ├── config.example.yaml              # 配置示例
-├── build.ps1                        # Windows 构建脚本 (7 targets)
-├── Makefile                         # Linux/macOS 构建脚本 (7 targets)
+├── build.py                         # 跨平台构建脚本 (7 targets)
 ├── go.mod
 └── go.sum
 ```

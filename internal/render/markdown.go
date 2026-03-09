@@ -6,8 +6,21 @@ import (
 	"strings"
 )
 
+// ANSI 转义序列（markdown 格式化专用 - VS Code 暗色主题风格）
+// 基础格式化常量（ansiReset, ansiBold, ansiDim, ansiItalic）定义在 highlight.go
+const (
+	ansiUnderline = "\033[4m"
+	ansiBlue      = "\033[38;5;75m"  // 亮蓝色 (链接)
+	ansiCyan      = "\033[38;5;87m"  // 亮青色 (高亮)
+	ansiGreen     = "\033[38;5;120m" // 亮绿色 (一级标题)
+	ansiYellow    = "\033[38;5;228m" // 亮黄色 (二级标题)
+	ansiMagenta   = "\033[38;5;213m" // 亮紫色 (三级标题)
+	ansiBgGray    = "\033[48;5;235m" // 深灰色背景 (代码块)
+	ansiCodeText  = "\033[38;5;215m" // 行内代码文字颜色 (浅橙)
+)
+
 // Markdown 将 Markdown 文本渲染为带 ANSI 转义码的终端输出
-// 支持: 标题(#), 代码块(```), 行内代码(`), 粗体(**), 斜体(*), 列表(- / 1.), 分隔线(---)
+// 支持: 标题(#), 代码块(```), 行内代码(`), 列表(- / *), 链接([]()), 水平线(---), 粗体(**), 斜体(*)
 func Markdown(text string) string {
 	lines := strings.Split(text, "\n")
 	var result []string
@@ -53,7 +66,7 @@ func Markdown(text string) string {
 	return strings.Join(result, "\n")
 }
 
-// renderCodeBlock 渲染代码块：语言标签 + 语法高亮 + 边框
+// renderCodeBlock 渲染代码块：深灰背景 + 语法高亮
 func renderCodeBlock(lang, code string) string {
 	if code == "" {
 		return ""
@@ -61,44 +74,40 @@ func renderCodeBlock(lang, code string) string {
 
 	var sb strings.Builder
 
-	langLabel := lang
-	if langLabel == "" {
-		langLabel = "code"
+	// 顶部标签（如果有语言标识）
+	if lang != "" {
+		sb.WriteString(fmt.Sprintf("\n%s%s┌─ %s %s%s\n", ansiDim, ansiBgGray, lang, strings.Repeat("─", 36), ansiReset))
+	} else {
+		sb.WriteString(fmt.Sprintf("\n%s%s┌%s%s\n", ansiDim, ansiBgGray, strings.Repeat("─", 42), ansiReset))
 	}
 
-	// 固定框宽度: 49 个可见字符 (含左右边框字符)
-	const boxWidth = 49
-
-	// 顶部: ┌─── lang ─────...┐
-	// "┌─── " = 5 chars, " " after lang = 1, "┐" = 1
-	padLen := boxWidth - 5 - len(langLabel) - 1 - 1
-	if padLen < 3 {
-		padLen = 3
-	}
-	sb.WriteString(fmt.Sprintf("\033[2m┌─── \033[0m\033[96m%s\033[0m\033[2m %s┐\033[0m\n",
-		langLabel, strings.Repeat("─", padLen)))
-
-	// 语法高亮代码行: │ NNN code
+	// 使用语法高亮渲染（如果支持该语言）
 	highlighted := HighlightCode(lang, code)
 	codeLines := strings.Split(highlighted, "\n")
-	for i, cl := range codeLines {
-		lineNum := fmt.Sprintf("%3d", i+1)
-		sb.WriteString(fmt.Sprintf("\033[2m│\033[0m \033[2m%s\033[0m %s%s%s\n",
-			lineNum, ansiBgCode, cl, ansiReset+ansiBgReset))
+
+	// 每行设置深灰背景
+	for _, line := range codeLines {
+		if line == "" {
+			sb.WriteString(fmt.Sprintf("%s%s%s\n", ansiBgGray, strings.Repeat(" ", 44), ansiReset))
+		} else {
+			// 代码行前添加 │ 符号
+			sb.WriteString(fmt.Sprintf("%s%s│%s %s%s\n", ansiDim, ansiBgGray, ansiReset+ansiBgGray, line, ansiReset))
+		}
 	}
 
-	// 底部: └─────...─────┘  (宽度与顶部一致)
-	sb.WriteString(fmt.Sprintf("\033[2m└%s┘\033[0m", strings.Repeat("─", boxWidth-2)))
+	// 底部边框
+	sb.WriteString(fmt.Sprintf("%s%s└%s%s\n", ansiDim, ansiBgGray, strings.Repeat("─", 42), ansiReset))
 
 	return sb.String()
 }
 
-// inline 样式正则
+// inline 样式正则（处理顺序：行内代码 → 粗体 → 斜体 → 链接）
 var (
-	boldRegex       = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	italicRegex     = regexp.MustCompile(`(?:^|[^*])\*([^*]+?)\*(?:[^*]|$)`)
-	inlineCodeRegex = regexp.MustCompile("`([^`]+)`")
-	linkRegex       = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	inlineCodeRegex   = regexp.MustCompile("`([^`]+)`")
+	boldTextRegex     = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	italicStarRegex   = regexp.MustCompile(`\*([^*\s][^*]*?)\*`)  // *text* 但不匹配 **
+	italicUnderRegex  = regexp.MustCompile(`_([^_]+)_`)
+	linkRegex         = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
 )
 
 // renderMarkdownLine 渲染单行 Markdown
@@ -112,7 +121,7 @@ func renderMarkdownLine(line string) string {
 
 	// 水平分隔线
 	if isHorizontalRule(trimmed) {
-		return "\033[2m────────────────────────────────────────────────\033[0m"
+		return ansiDim + strings.Repeat("─", 50) + ansiReset
 	}
 
 	// 标题
@@ -124,7 +133,7 @@ func renderMarkdownLine(line string) string {
 	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") {
 		indent := countLeadingSpaces(line)
 		content := trimmed[2:]
-		prefix := strings.Repeat("  ", indent/2) + "\033[96m•\033[0m "
+		prefix := strings.Repeat("  ", indent/2) + "• "
 		return prefix + renderInline(content)
 	}
 
@@ -134,21 +143,21 @@ func renderMarkdownLine(line string) string {
 		num := trimmed[:idx]
 		content := strings.TrimSpace(trimmed[idx+1:])
 		indent := countLeadingSpaces(line)
-		prefix := strings.Repeat("  ", indent/2) + "\033[96m" + num + ".\033[0m "
+		prefix := strings.Repeat("  ", indent/2) + num + ". "
 		return prefix + renderInline(content)
 	}
 
 	// 引用块
 	if strings.HasPrefix(trimmed, "> ") {
 		content := trimmed[2:]
-		return "\033[2m│\033[0m \033[3m" + renderInline(content) + "\033[0m"
+		return ansiDim + "│ " + ansiReset + renderInline(content)
 	}
 
 	// 普通段落
 	return renderInline(line)
 }
 
-// renderHeading 渲染标题
+// renderHeading 渲染标题（加粗 + 颜色区分）
 func renderHeading(line string) string {
 	level := 0
 	for _, ch := range line {
@@ -160,36 +169,58 @@ func renderHeading(line string) string {
 	}
 	content := strings.TrimSpace(line[level:])
 
+	// 不同级别标题用不同颜色和样式
 	switch level {
 	case 1:
-		return fmt.Sprintf("\n\033[1m\033[96m█ %s\033[0m\n", content)
+		// 一级标题：亮绿色 + 加粗 + 双分隔线
+		return fmt.Sprintf("\n%s%s═══ %s ═══%s\n", ansiBold, ansiGreen, content, ansiReset)
 	case 2:
-		return fmt.Sprintf("\n\033[1m\033[94m▌ %s\033[0m\n", content)
+		// 二级标题：亮黄色 + 加粗 + 箭头
+		return fmt.Sprintf("\n%s%s▸ %s%s\n", ansiBold, ansiYellow, content, ansiReset)
 	case 3:
-		return fmt.Sprintf("\033[1m\033[95m  ▸ %s\033[0m", content)
+		// 三级标题：亮紫色 + 加粗 + 点
+		return fmt.Sprintf("\n%s%s  • %s%s", ansiBold, ansiMagenta, content, ansiReset)
+	case 4:
+		// 四级标题：亮蓝色 + 加粗
+		return fmt.Sprintf("\n%s%s    › %s%s", ansiBold, ansiBlue, content, ansiReset)
 	default:
-		return fmt.Sprintf("\033[1m%s%s\033[0m", strings.Repeat("  ", level-1), content)
+		// 更深层级：青色 + 缩进
+		return fmt.Sprintf("%s%s%s%s%s", ansiBold, ansiCyan, strings.Repeat("  ", level-1), content, ansiReset)
 	}
 }
 
 // renderInline 渲染行内 Markdown 元素
+// 处理顺序很重要：行内代码 → 链接 → 粗体 → 斜体
 func renderInline(text string) string {
-	// 行内代码 (必须在 bold/italic 之前处理)
+	// 1. 行内代码：深灰背景 + 浅橙文字（确保黑色外围背景）
 	text = inlineCodeRegex.ReplaceAllStringFunc(text, func(m string) string {
 		code := inlineCodeRegex.FindStringSubmatch(m)[1]
-		return "\033[48;5;236m\033[96m " + code + " \033[0m"
+		return fmt.Sprintf("%s%s %s %s", ansiBgCode, ansiCodeText, code, ansiReset)
 	})
 
-	// 粗体
-	text = boldRegex.ReplaceAllStringFunc(text, func(m string) string {
-		inner := boldRegex.FindStringSubmatch(m)[1]
-		return "\033[1m" + inner + "\033[0m"
-	})
-
-	// 链接 [text](url)
+	// 2. 链接：蓝色下划线文字
 	text = linkRegex.ReplaceAllStringFunc(text, func(m string) string {
 		parts := linkRegex.FindStringSubmatch(m)
-		return fmt.Sprintf("\033[4m\033[94m%s\033[0m \033[2m(%s)\033[0m", parts[1], parts[2])
+		displayText := parts[1]
+		url := parts[2]
+		return fmt.Sprintf("%s%s%s%s %s(%s)%s", ansiUnderline, ansiBlue, displayText, ansiReset, ansiDim, url, ansiReset)
+	})
+
+	// 3. 粗体：**text**（必须在斜体前处理，避免 ** 被拆成两个 *）
+	text = boldTextRegex.ReplaceAllStringFunc(text, func(m string) string {
+		content := boldTextRegex.FindStringSubmatch(m)[1]
+		return fmt.Sprintf("%s%s%s", ansiBold, content, ansiReset)
+	})
+
+	// 4. 斜体：*text* 或 _text_
+	text = italicStarRegex.ReplaceAllStringFunc(text, func(m string) string {
+		content := italicStarRegex.FindStringSubmatch(m)[1]
+		return fmt.Sprintf("%s%s%s", ansiItalic, content, ansiReset)
+	})
+
+	text = italicUnderRegex.ReplaceAllStringFunc(text, func(m string) string {
+		content := italicUnderRegex.FindStringSubmatch(m)[1]
+		return fmt.Sprintf("%s%s%s", ansiItalic, content, ansiReset)
 	})
 
 	return text

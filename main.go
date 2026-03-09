@@ -3,34 +3,49 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/xiangjianhe-github/jiasinecli/cmd"
 	"github.com/xiangjianhe-github/jiasinecli/internal/shell"
+	"github.com/xiangjianhe-github/jiasinecli/internal/version"
 )
 
 func main() {
+	// Windows 双击启动时：重新在 PowerShell 中打开
+	if shell.RelaunchInPowerShell() {
+		return
+	}
+
+	// 双击时无论如何都保持窗口打开（LIFO：最后执行）
+	defer shell.KeepWindowOpen()
+
+	// panic 安全网：打印错误信息（LIFO：先于 KeepWindowOpen 执行）
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "\n\u274c 程序异常: %v\n", r)
+		}
+	}()
+
+	// 后台异步检查更新（独立 recover 保护，防止 goroutine panic 导致整体崩溃）
+	go func() {
+		defer func() { recover() }()
+		checkUpdateInBackground()
+	}()
+
 	enterInteractive := func() {
 		shell.RunInteractive(func(args []string) error {
 			return cmd.ExecuteArgs(args)
 		})
 	}
 
-	// Windows 双击启动时，通过 cmd.exe 重新启动以获得完整终端支持
-	if len(os.Args) <= 1 && shell.IsDoubleClicked() {
-		shell.RelaunchInCmd()
-		return
-	}
-
-	// 无参数启动 → 进入交互式 Shell
-	// (终端直接运行 jiasinecli)
+	// 无参数启动 → 直接进入 AI 对话模式
 	if len(os.Args) <= 1 {
-		enterInteractive()
+		cmd.EnterDefaultAIMode()
 		return
 	}
 
-	// 检查是否显式指定了 --interactive / -i
-	// 如果是，直接进入交互模式，跳过 cobra 默认帮助输出
+	// 检查是否显式指定了 --interactive / -i（进入传统命令 Shell）
 	if hasFlag("-i", "--interactive") {
 		enterInteractive()
 		return
@@ -38,7 +53,6 @@ func main() {
 
 	// 正常 CLI 模式
 	if err := cmd.Execute(); err != nil {
-		shell.KeepWindowOpen()
 		os.Exit(1)
 	}
 }
@@ -53,4 +67,24 @@ func hasFlag(flags ...string) bool {
 		}
 	}
 	return false
+}
+
+// checkUpdateInBackground 后台异步检查更新
+func checkUpdateInBackground() {
+	// 仅在非 update 命令时检查
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		return
+	}
+
+	updater := version.NewUpdater()
+	hasUpdate, remote, err := updater.CheckUpdate()
+
+	// 静默失败（不干扰用户体验）
+	if err != nil {
+		return
+	}
+
+	if hasUpdate && remote != nil {
+		fmt.Fprintf(os.Stderr, "\n💡 发现新版本 %s，运行 'jiasinecli update' 更新\n\n", remote.String())
+	}
 }

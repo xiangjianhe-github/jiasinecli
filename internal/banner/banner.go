@@ -6,46 +6,91 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/xiangjianhe-github/jiasinecli/internal/theme"
 	"github.com/xiangjianhe-github/jiasinecli/internal/version"
 )
 
-// ANSI 色彩常量 — 配色参考 icon.json Lottie 动画
-// 青色系: #5ef8db → BrightCyan  蓝色系: #8dadf2 → BrightBlue  青蓝: #31c9e3 → Cyan
-const (
-	Reset         = "\033[0m"
-	Bold          = "\033[1m"
-	Dim           = "\033[2m"
-	Italic        = "\033[3m"
-	Underline     = "\033[4m"
-	Cyan          = "\033[36m"
-	Blue          = "\033[34m"
-	Green         = "\033[32m"
-	Yellow        = "\033[33m"
-	Red           = "\033[31m"
-	Magenta       = "\033[35m"
-	White         = "\033[97m"
-	BrightCyan    = "\033[96m"
-	BrightBlue    = "\033[94m"
-	BrightGreen   = "\033[92m"
-	BrightYellow  = "\033[93m"
-	BrightRed     = "\033[91m"
-	BrightMagenta = "\033[95m"
-	// 背景色
-	BgDarkGray = "\033[48;5;236m"
-	BgReset    = "\033[49m"
+// 色彩快捷访问 — 从当前主题获取
+// 这些变量函数避免了调用方到处写 theme.Current().XXX
+func t() *theme.Theme { return theme.Current() }
+
+// 导出颜色属性（兼容已有代码的引用方式）
+// 通过函数返回当前主题的颜色，实现主题切换后即时生效
+var (
+	ForceBlackBg  = "" // 已废弃，保留空值兼容
 )
+
+// 以下颜色属性通过函数动态获取，确保跟随主题切换
+// 为兼容已有代码的常量风格引用，使用包级变量
+// 注意: 这些在 init/主题切换后需调用 RefreshColors() 更新
+var (
+	Reset         string
+	Bold          string
+	Dim           string
+	Italic        string
+	Underline     string
+	Cyan          string
+	Blue          string
+	Green         string
+	Yellow        string
+	Red           string
+	Magenta       string
+	White         string
+	BrightCyan    string
+	BrightBlue    string
+	BrightGreen   string
+	BrightYellow  string
+	BrightRed     string
+	BrightMagenta string
+	BgDarkGray    string
+	BgReset       string
+	Gray          string
+	LightGray     string
+	BgDefault     string
+)
+
+func init() {
+	RefreshColors()
+}
+
+// RefreshColors 从当前主题刷新所有颜色变量
+// 在主题切换后调用此函数
+func RefreshColors() {
+	th := t()
+	Reset = th.Reset
+	Bold = th.Bold
+	Dim = th.Dim
+	Italic = th.Italic
+	Underline = th.Underline
+	Cyan = th.Cyan
+	Blue = th.Blue
+	Green = th.Green
+	Yellow = th.Yellow
+	Red = th.Red
+	Magenta = th.Magenta
+	White = th.White
+	BrightCyan = th.BrightCyan
+	BrightBlue = th.BrightBlue
+	BrightGreen = th.BrightGreen
+	BrightYellow = th.BrightYellow
+	BrightRed = th.BrightRed
+	BrightMagenta = th.BrightMagenta
+	BgDarkGray = th.BgCode
+	BgReset = th.BgReset
+	Gray = th.Gray
+	LightGray = th.LightGray
+	BgDefault = th.BgDefault
+}
 
 // asciiArt 是 jiasinecli 的 ANSI 渐变 ASCII 艺术字
 // 从左到右：青色 → 蓝色 → 绿色 渐变
 func asciiArt() string {
-	// 使用 block/modern 风格字体
 	lines := []string{
 		`                   ╦╦╔═╗╔═╗╦╔╗╔╔═╗    ╔═╗╦  ╦`,
 		`                   ║║╠═╣╚═╗║║║║║╣  ══ ║  ║  ║`,
 		`                 ╚═╝╩╩ ╩╚═╝╩╝╚╝╚═╝    ╚═╝╩═╝╩`,
 	}
 
-	// 渐变色序列
 	colors := []string{
 		Bold + BrightCyan,
 		Bold + BrightBlue,
@@ -89,14 +134,14 @@ func ShortBanner() string {
 func WelcomeScreen() string {
 	ver := version.Current
 	return fmt.Sprintf(`%s
-%s  版本  %s%s
+%s  版本  %s
   平台  %s/%s
   Go    %s
 %s
-%s  输入命令开始使用，输入 %shelp%s 查看帮助，%sexit%s 退出%s
+%s  输入命令开始使用，输入 %s/help%s 查看帮助，%s/exit%s 退出%s
 `,
 		Logo(),
-		Dim+White, Bold+BrightGreen+ver.String()+Reset, Reset,
+		Dim+White, Bold+BrightGreen+ver.String()+Reset,
 		runtime.GOOS, runtime.GOARCH,
 		runtime.Version(),
 		Reset,

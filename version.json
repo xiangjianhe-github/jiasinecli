@@ -1,0 +1,22 @@
+{
+  "major": 0,
+  "minor": 1,
+  "patch": 0,
+  "pre_release": "alpha.1",
+  "build_meta": "",
+  "git_commit": "abc1234",
+  "build_date": "2026-03-06T10:00:00Z",
+  "go_version": "go1.26.0",
+  "platform": "multi",
+  "download_urls": {
+    "windows-amd64": "https://drive.cvte.com/p/DZjGLnIQosoIGOLAZCAA/jiasinecli-windows.exe",
+    "windows-arm64": "https://drive.cvte.com/p/DZjGLnIQosoIGOLAZCAA/jiasinecli-windows-arm64.exe",
+    "linux-amd64": "https://drive.cvte.com/p/DZjGLnIQosoIGOLAZCAA/jiasinecli-linux",
+    "linux-arm64": "https://drive.cvte.com/p/DZjGLnIQosoIGOLAZCAA/jiasinecli-linux-arm64",
+    "linux-arm": "https://drive.cvte.com/p/DZjGLnIQosoIGOLAZCAA/jiasinecli-raspi",
+    "darwin-amd64": "https://drive.cvte.com/p/DZjGLnIQosoIGOLAZCAA/jiasinecli-macos-intel",
+    "darwin-arm64": "https://drive.cvte.com/p/DZjGLnIQosoIGOLAZCAA/jiasinecli-macos-arm"
+  },
+  "release_date": "2026-03-06",
+  "changelog": "## v0.1.0-alpha.1\n\n### 新增功能\n- AI 交互模式优化\n- Windows Terminal 支持\n- Markdown 渲染\n- 自动更新功能\n\n### 修复\n- 跨平台编译兼容性"
+}
